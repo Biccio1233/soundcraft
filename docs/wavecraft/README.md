@@ -76,12 +76,13 @@ Reduction / Restoration (*Process*, or *Add to Rack* to hear it live), and as a 
 | Noise Reduction | `wave.noise_reduction` | Removes the captured noise print: Ephraim–Malah (1985) log-spectral amplitude gain with the decision-directed a-priori SNR. Defaults: reduce by up to 40 dB, noise offset +2 dB, smoothing 99.5 %, FFT 4096. In the rack the print travels as 62 sixth-octave band levels. |
 | Adaptive Denoise | `wave.adaptive_noise_reduction` | No print: the noise is tracked by minimum statistics (after Martin 2001). Steady tones count as noise; a rising noise is followed within about two tracking windows. |
 | Hum Removal | `wave.dehum` | Finite-depth notches on 50 or 60 Hz and harmonics (Auto picks the family from the selection). |
-| Hiss Reduction | `wave.hiss_reduction` | A downward expander per FFT bin above the cutoff (4 kHz), against a tracked noise floor. |
-| Clip Repair | `wave.declip` | Runs of clipped samples (up to 10 ms) redrawn by a cubic through their neighbours. |
+| Hiss Reduction | `wave.hiss_reduction` | A downward expander per FFT bin above the cutoff (4 kHz), against a tracked noise floor. Steady tones above the cutoff count as hiss. |
+| Clip Repair | `wave.declip` | Runs of clipped samples (up to 10 ms) redrawn by a cubic through their neighbours. Redrawn peaks can pass 0 dBFS: the command says so, and the audio needs normalizing before a 16- or 24-bit save or export, which would flatten them again. |
 | Reverb Reduction | `wave.dereverb` | Late reverberation predicted from the power 50 ms earlier and the reverb time you set, subtracted per bin. Approximate: it does not measure the room. |
 
-The usual workflow: select a stretch of noise alone, `wave.noise_print_capture`, select all (or
-nothing), `wave.noise_reduction`. Prints save and load as JSON (`wave.noise_print_save/load`).
+The usual workflow: select a stretch of noise alone, `wave.noise_print_capture` (it needs a
+selection or explicit `start`/`end`, and keeps one print per channel), select all (or nothing),
+`wave.noise_reduction`. Prints save and load as JSON (`wave.noise_print_save/load`).
 
 **Real-take acceptance** (the owner's 8-bit 44.1 kHz stereo take; method in the design, "Settled at
 the start of F1": pause = RMS over 211.4–212.1 s, "3 kHz" = RMS over 30–90 s after an RBJ
