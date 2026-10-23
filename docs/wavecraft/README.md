@@ -27,7 +27,12 @@ wave.export {"path": "take-edit.wav", "bit_depth": 24, "dither": "shaped_light"}
 ```
 
 Positions are samples, `{"seconds": x}` or time strings like `"0:12.500"`. Edits act on the
-selection (`wave.select {start, end, channels?}`) or on explicit `start`/`end`.
+selection (`wave.select {start, end, channels?}`) or on explicit `start`/`end`. Processing commands
+(gain, normalize, fades, Apply Rack…) with no selection act on the whole file; cut, copy and delete
+need a range, so a cursor alone never removes the audio.
+
+`wave.open` refuses when the open file has unsaved changes unless it gets `discard: true` (the app
+asks first), and it never replaces a SoundCraft multitrack session.
 
 ## Agents (MCP)
 
@@ -50,7 +55,8 @@ selection (`wave.select {start, end, channels?}`) or on explicit `start`/`end`.
 | History | `wave.history`, `wave.history_jump`, `wave.history_budget`, `edit.undo`, `edit.redo` |
 | Effects rack | `wave.rack_add`, `wave.rack_remove`, `wave.rack_bypass`, `wave.rack_param`, `wave.rack_list`, `wave.rack_apply`, `wave.rack_preset_save`, `wave.rack_preset_load` |
 
-Export writes WAV, AIFF or FLAC at 16, 24 or 32 bits or 32-bit float. Dither defaults to TPDF at
+Export writes WAV, AIFF or FLAC at 16, 24 or 32 bits or 32-bit float (in the app, File › Export…
+asks for the file, then for bit depth and dither). Dither defaults to TPDF at
 16 bits and none above; `shaped_light` and `shaped_strong` move the noise to the highs. Samples
 already on the target grid pass through unchanged, so untouched audio stays bit-exact. Save writes
 back only WAV/AIFF/FLAC at 16 bits or more; MP3, M4A and 8-bit files go through Export.
