@@ -141,7 +141,7 @@ pub fn replace_range(e: &mut Engine, r: Range, samples: Vec<Vec<f32>>, label: St
 
 /// The shared path of every in-place process: render the range, run `f` on the enabled channels,
 /// put the result back as one undo step.
-fn process_range(e: &mut Engine, cmd: &str, p: &Value, verb: &str, f: impl FnOnce(&mut Vec<Vec<f32>>) -> Result<()>) -> Result<Value> {
+pub(super) fn process_range(e: &mut Engine, cmd: &str, p: &Value, verb: &str, f: impl FnOnce(&mut Vec<Vec<f32>>) -> Result<()>) -> Result<Value> {
     let r = wave_range(e, cmd, p)?;
     if r.is_empty() {
         return Err(bad(cmd, "select a range first"));

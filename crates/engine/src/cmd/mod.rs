@@ -39,6 +39,7 @@ mod vst3;
 pub mod wave;
 pub mod wave_edit;
 pub mod wave_rack;
+pub mod wave_restore;
 mod zoom_toggle;
 
 pub use file::bounce_job;
@@ -142,6 +143,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(wave::specs());
         v.extend(wave_edit::specs());
         v.extend(wave_rack::specs());
+        v.extend(wave_restore::specs());
         #[cfg(test)]
         v.extend(test_specs());
         v

@@ -12,6 +12,8 @@ pub enum Dialog {
     ExportFile,
     SavePreset,
     LoadPreset,
+    SavePrint,
+    LoadPrint,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -62,8 +64,21 @@ pub const WAVE_MENUS: &[MenuItem] = &[
     item(&["Effects"], "Apply Rack", "wave.rack_apply", "", None),
     file(&["Effects"], "Load Rack Preset…", "wave.rack_preset_load", None, Dialog::LoadPreset),
     file(&["Effects"], "Save Rack Preset…", "wave.rack_preset_save", None, Dialog::SavePreset),
+    item(RESTORE, "Capture Noise Print", "wave.noise_print_capture", "", Some("Shift+P")),
+    item(RESTORE, "Noise Reduction", "wave.noise_reduction", "", Some("Cmd+Shift+P")),
+    item(RESTORE, "Adaptive Denoise", "wave.adaptive_noise_reduction", "", None),
+    item(RESTORE, "Hum Removal", "wave.dehum", "", None),
+    item(RESTORE, "Hiss Reduction", "wave.hiss_reduction", "", None),
+    item(RESTORE, "Clip Repair", "wave.declip", "", None),
+    item(RESTORE, "Reverb Reduction", "wave.dereverb", "", None),
+    file(RESTORE, "Save Noise Print…", "wave.noise_print_save", None, Dialog::SavePrint),
+    file(RESTORE, "Load Noise Print…", "wave.noise_print_load", None, Dialog::LoadPrint),
+    item(RESTORE, "Clear Noise Print", "wave.noise_print_clear", "", None),
     item(&["View"], "Spectral Display", "wave.view_spectral", "", Some("Cmd+Shift+D")),
 ];
+
+/// The restoration submenu of Effects.
+const RESTORE: &[&str] = &["Effects", "Noise Reduction / Restoration"];
 
 /// The top-level menu names, in order.
 fn roots() -> Vec<&'static str> {
@@ -119,6 +134,16 @@ pub fn invoke(app: &mut WaveApp, m: &MenuItem) {
         }
         Dialog::LoadPreset => {
             if let Some(path) = app.services.pick_open.as_ref().and_then(|pick| pick("Load rack preset", &["json"])) {
+                app.run(m.command, json!({"path": path}));
+            }
+        }
+        Dialog::SavePrint => {
+            if let Some(path) = app.services.pick_save.as_ref().and_then(|pick| pick("Save noise print", "noise-print.json")) {
+                app.run(m.command, json!({"path": path}));
+            }
+        }
+        Dialog::LoadPrint => {
+            if let Some(path) = app.services.pick_open.as_ref().and_then(|pick| pick("Load noise print", &["json"])) {
                 app.run(m.command, json!({"path": path}));
             }
         }

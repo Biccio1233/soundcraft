@@ -37,6 +37,8 @@ pub struct WaveFile {
     pub history_dropped: usize,
     /// Show the spectral view under the waveform (a view setting: not part of the file).
     pub spectral: bool,
+    /// The noise print captured for noise reduction (not part of the file, not an undo step).
+    pub noise_print: Option<super::wave_restore::NoiseCapture>,
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -213,6 +215,7 @@ fn open(e: &mut Engine, p: &Value) -> Result<Value> {
         history_budget_mb: DEFAULT_HISTORY_BUDGET_MB,
         history_dropped: 0,
         spectral: false,
+        noise_print: None,
     });
     info_json(e)
 }

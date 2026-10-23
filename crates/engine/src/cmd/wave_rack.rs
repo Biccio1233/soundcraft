@@ -104,7 +104,10 @@ fn rack_json(e: &Engine) -> Result<Value> {
 
 fn rack_add(e: &mut Engine, p: &Value) -> Result<Value> {
     let plugin = str_param(p, "plugin").ok_or_else(|| bad("wave.rack_add", "`plugin` required"))?.to_string();
-    let q = on_track(e, p)?;
+    let mut q = on_track(e, p)?;
+    if plugin == "noise_reduction" {
+        super::wave_restore::fill_print_bands(e, &mut q);
+    }
     call(e, "mix.insert", q)?;
     let name = super::clap::plugin_info(&plugin).map_or(plugin.as_str(), |i| i.name).to_string();
     e.set_undo_label(format!("Add {name}"));
