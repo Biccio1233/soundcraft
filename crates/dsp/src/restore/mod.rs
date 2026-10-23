@@ -5,6 +5,7 @@
 pub mod adaptive;
 pub mod declip;
 pub mod dehum;
+pub mod dereverb;
 mod gain;
 pub mod hiss;
 pub mod noise_reduction;
@@ -14,6 +15,7 @@ mod stft;
 pub use adaptive::{AdaptiveNoiseReduction, MinTracker};
 pub use declip::Declip;
 pub use dehum::{Dehum, detect_mains};
+pub use dereverb::Dereverb;
 pub use gain::{e1, lsa_gain};
 pub use hiss::HissReduction;
 pub use noise_reduction::NoiseReduction;

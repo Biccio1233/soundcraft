@@ -482,3 +482,62 @@ fn declip_leaves_clean_audio_alone() {
     assert!(d.set_param("threshold_db", -6.0));
     assert_eq!(processed(&x, d.as_mut()), x);
 }
+
+// ---- reverb reduction -----------------------------------------------------------------------------
+
+/// Clicks at 0.5, 1.5 … 5.5 s through a room (a direct impulse plus noise decaying with T60 0.8 s),
+/// 7 s in all.
+fn reverberant() -> (Vec<f32>, Vec<usize>) {
+    let n = (SR * 7.0) as usize;
+    let rir_len = (SR * 1.0) as usize;
+    let tail = noise(1, rir_len, 0.05, 41).remove(0);
+    let rir: Vec<f32> = (0..rir_len)
+        .map(|i| {
+            let t = i as f32 / SR;
+            if i == 0 { 1.0 } else { tail[i] * 10f32.powf(-3.0 * t / 0.8) }
+        })
+        .collect();
+    let clicks: Vec<usize> = (0..6).map(|k| ((0.5 + k as f32) * SR) as usize).collect();
+    let mut x = vec![0.0f32; n];
+    for &c in &clicks {
+        for (i, r) in rir.iter().enumerate() {
+            if let Some(v) = x.get_mut(c + i) {
+                *v += r;
+            }
+        }
+    }
+    (x, clicks)
+}
+
+/// Energy (dB) of `x` from `a` to `b` seconds after each click, summed over the clicks after the first.
+fn after_clicks_db(x: &[f32], clicks: &[usize], a: f32, b: f32) -> f32 {
+    let e: f32 = clicks.iter().skip(1).map(|&c| x[c + (a * SR) as usize..c + (b * SR) as usize].iter().map(|v| v * v).sum::<f32>()).sum();
+    db(e)
+}
+
+#[test]
+fn dereverb_shortens_the_tail() {
+    let (x, clicks) = reverberant();
+    let mut d = create("dereverb").unwrap();
+    assert!(d.set_param("amount", 100.0));
+    assert!(d.set_param("t60_s", 0.8));
+    assert!(d.set_param("auto_gain", 0.0));
+    let y = processed(&x, d.as_mut());
+    let late = after_clicks_db(&x, &clicks, 0.15, 0.7) - after_clicks_db(&y, &clicks, 0.15, 0.7);
+    assert!(late >= 6.0, "late tail dropped {late} dB");
+    let direct = after_clicks_db(&x, &clicks, 0.0, 0.02) - after_clicks_db(&y, &clicks, 0.0, 0.02);
+    assert!(direct.abs() <= 3.0, "first 20 ms changed {direct} dB");
+}
+
+#[test]
+fn dereverb_auto_gain_is_bounded_in_silence() {
+    let mut x = vec![0.0f32; SR as usize];
+    x.extend(noise(1, (SR * 0.5) as usize, 0.2, 43).remove(0));
+    x.extend(vec![0.0f32; SR as usize]);
+    let peak_in = x.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    let mut d = create("dereverb").unwrap();
+    let y = processed(&x, d.as_mut());
+    assert!(y.iter().all(|v| v.is_finite()));
+    let peak_out = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+    assert!(peak_out < 4.0 * peak_in, "peak {peak_out} vs input {peak_in}");
+}
