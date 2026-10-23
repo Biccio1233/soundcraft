@@ -1,10 +1,9 @@
 # WaveCraft parity — waveform editor (F0)
 
-> **Last updated:** 2026-10-23 · **Change:** major (first assessment, F0) · **Target:** the incumbent waveform editor, observed black-box (menus, dialogs, screenshots by window id, kept under the gitignored `plan/`)
+> **Last updated:** 2026-10-24 · **Change:** minor (restoration section, F1) · **Target:** the incumbent waveform editor, observed black-box (menus, dialogs, screenshots by window id, kept under the gitignored `plan/`)
 
 What the incumbent's waveform view offers for one file, and where WaveCraft stands. Wording is ours;
-only feature names are shared. Restoration (F1) and music analysis (F2) get their own sections when
-they land.
+only feature names are shared. Music analysis (F2) gets its own section when it lands.
 
 | Feature | WaveCraft | Command(s) | Test |
 |---|---|---|---|
@@ -22,10 +21,30 @@ they land.
 | Sample-rate and channel conversion on save | ❌ not yet (export keeps rate and channels) | — | — |
 | Levels meter, selection/view fields | ✅ | UI | `drag_selects_a_range` |
 | Markers, batch processing, recording | ❌ F3 | — | — |
-| Noise print and the restoration family | ❌ F1 | — | — |
+
+## Restoration (F1)
+
+The incumbent's Effects › Noise Reduction / Restoration menu, item by item (our names and wording).
+
+| Feature | WaveCraft | Command(s) | Test |
+|---|---|---|---|
+| Capture a noise print, save/load it | ✅ JSON prints | `wave.noise_print_capture/save/load/clear/info` | `print_save_load_round_trip`, `capture_then_noise_reduction_is_one_undo_step` |
+| Noise reduction from the print (amount, spectral smoothing, FFT size, output noise only) | ✅ MMSE log-spectral amplitude; print curve in the dialog, not editable | `wave.noise_reduction` | `nr_synthetic_tone_kept_noise_lowered`, `real_take_meets_the_f1_target` |
+| Adaptive noise reduction (no print) | ✅ minimum statistics | `wave.adaptive_noise_reduction` | `adaptive_lowers_stationary_noise_without_print` |
+| Simple denoise with an amount slider | 🟡 covered by Adaptive Denoise | `wave.adaptive_noise_reduction` | — |
+| Hum removal (frequency, Q, harmonics, output hum only) | ✅ 50/60/Auto | `wave.dehum` | `dehum_removes_50hz_family`, `dehum_auto_finds_60` |
+| Hiss reduction (noise floor, reduce by, output hiss only) | ✅ cutoff adjustable | `wave.hiss_reduction` | `hiss_lowers_highs_keeps_lows` |
+| Reverb removal (amount, auto gain) | ✅ approximate (needs the reverb time) | `wave.dereverb` | `dereverb_shortens_the_tail` |
+| Clipping restoration | ✅ cubic redraw of runs up to 10 ms | `wave.declip` | `declip_restores_a_clipped_sine` |
+| Preview while adjusting | ✅ through the rack (Add to Rack) | `wave.rack_add` | `effect_dialog_process_adds_one_history_row` |
+| Amplitude statistics | 🟡 peak and RMS, optional band filter; no histogram, no loudness | `wave.stats` | `stats_matches_hand_computation` |
+| Learned sound removal (capture a sound model, remove it) | ❌ | — | — |
+| Click/pop eliminator, automatic click removal | ❌ | — | — |
+| Automatic phase correction | ❌ | — | — |
 
 ## Revision history
 
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-23 | major | First assessment at the end of F0 |
+| 2026-10-24 | minor | Restoration section at the end of F1 |
