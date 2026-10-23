@@ -327,3 +327,76 @@ fn min_tracker_follows_a_noise_step() {
     let after: f32 = 10.0 * (t.noise()[0] / hi).log10();
     assert!(after.abs() <= 3.0, "3.5 s after the step: {after} dB off");
 }
+
+// ---- hum removal ----------------------------------------------------------------------------------
+
+use soundcraft_dsp::restore::detect_mains;
+
+/// Goertzel level in dB (relative units) of `hz` over `x[from..to]` seconds.
+fn tone_db(x: &[f32], hz: f32, from: f32, to: f32) -> f32 {
+    let seg = &x[(from * SR) as usize..((to * SR) as usize).min(x.len())];
+    let coeff = 2.0 * (std::f64::consts::TAU * f64::from(hz) / f64::from(SR)).cos();
+    let (mut s1, mut s2) = (0.0f64, 0.0f64);
+    for &v in seg {
+        let s = f64::from(v) + coeff * s1 - s2;
+        s2 = s1;
+        s1 = s;
+    }
+    let p = (s1 * s1 + s2 * s2 - coeff * s1 * s2) / (seg.len() as f64).powi(2);
+    10.0 * p.max(1e-30).log10() as f32
+}
+
+/// 1 kHz at −20 dB plus a hum on `mains` Hz (harmonics 1–5, −20 dB each), 4 s.
+fn hum(mains: f32) -> Vec<f32> {
+    let n = (SR * 4.0) as usize;
+    let mut x = sine(1000.0, -20.0, n);
+    for h in 1..=5 {
+        for (v, s) in x.iter_mut().zip(sine(mains * h as f32, -20.0, n)) {
+            *v += s;
+        }
+    }
+    x
+}
+
+#[test]
+fn dehum_removes_50hz_family() {
+    let x = hum(50.0);
+    let mut d = create("dehum").unwrap();
+    assert!(d.set_param("freq", 1.0));
+    let y = processed(&x, d.as_mut());
+    for h in 1..=5 {
+        let hz = 50.0 * h as f32;
+        let drop = tone_db(&x, hz, 1.0, 4.0) - tone_db(&y, hz, 1.0, 4.0);
+        assert!(drop >= 30.0, "{hz} Hz dropped {drop} dB");
+    }
+    let keep = tone_db(&x, 1000.0, 1.0, 4.0) - tone_db(&y, 1000.0, 1.0, 4.0);
+    assert!(keep.abs() <= 0.5, "1 kHz changed {keep} dB");
+}
+
+#[test]
+fn dehum_auto_finds_60() {
+    let x = hum(60.0);
+    assert_eq!(detect_mains(std::slice::from_ref(&x), SR), 60.0);
+    assert_eq!(detect_mains(&[hum(50.0)], SR), 50.0);
+    let mut d = create("dehum").unwrap();
+    let y = processed(&x, d.as_mut());
+    for hz in [60.0, 120.0, 180.0] {
+        let drop = tone_db(&x, hz, 1.5, 4.0) - tone_db(&y, hz, 1.5, 4.0);
+        assert!(drop >= 25.0, "{hz} Hz dropped {drop} dB");
+    }
+}
+
+#[test]
+fn dehum_hum_only_keeps_the_hum() {
+    let x = hum(50.0);
+    let mut d = create("dehum").unwrap();
+    assert!(d.set_param("freq", 1.0));
+    assert!(d.set_param("hum_only", 1.0));
+    let y = processed(&x, d.as_mut());
+    // The comb's phase at 1 kHz (a few degrees over 8 harmonics at Q 30) leaks the program at
+    // about −24 dB into the hum-only output.
+    let drop = tone_db(&x, 1000.0, 1.0, 4.0) - tone_db(&y, 1000.0, 1.0, 4.0);
+    assert!(drop >= 20.0, "1 kHz dropped only {drop} dB");
+    let kept = tone_db(&x, 50.0, 1.0, 4.0) - tone_db(&y, 50.0, 1.0, 4.0);
+    assert!(kept.abs() <= 1.0, "50 Hz changed {kept} dB");
+}
