@@ -5,6 +5,7 @@
 pub mod adaptive;
 pub mod dehum;
 mod gain;
+pub mod hiss;
 pub mod noise_reduction;
 mod print;
 mod stft;
@@ -12,6 +13,7 @@ mod stft;
 pub use adaptive::{AdaptiveNoiseReduction, MinTracker};
 pub use dehum::{Dehum, detect_mains};
 pub use gain::{e1, lsa_gain};
+pub use hiss::HissReduction;
 pub use noise_reduction::NoiseReduction;
 pub use print::{BANDS, FLOOR_DB, NoisePrint, band_lo_hz, bands_to_bins};
 pub use rustfft::num_complex::Complex;

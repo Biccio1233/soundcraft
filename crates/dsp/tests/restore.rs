@@ -400,3 +400,59 @@ fn dehum_hum_only_keeps_the_hum() {
     let kept = tone_db(&x, 50.0, 1.0, 4.0) - tone_db(&y, 50.0, 1.0, 4.0);
     assert!(kept.abs() <= 1.0, "50 Hz changed {kept} dB");
 }
+
+// ---- hiss reduction -------------------------------------------------------------------------------
+
+/// White noise at −60 dBFS plus 440 Hz at −20 dBFS, 4 s.
+fn hissy() -> Vec<f32> {
+    let n = (SR * 4.0) as usize;
+    let mut x = noise(1, n, 10f32.powf(-60.0 / 20.0), 31).remove(0);
+    for (v, s) in x.iter_mut().zip(sine(440.0, -20.0, n)) {
+        *v += s;
+    }
+    x
+}
+
+const TOP: [(FilterType, f32, f32); 6] = [
+    (FilterType::HighPass, 6000.0, 0.707),
+    (FilterType::HighPass, 6000.0, 0.707),
+    (FilterType::HighPass, 6000.0, 0.707),
+    (FilterType::HighPass, 6000.0, 0.707),
+    (FilterType::LowPass, 12000.0, 0.707),
+    (FilterType::LowPass, 12000.0, 0.707),
+];
+/// 1.2–2 kHz: below the default cutoff's ramp, steep enough that the 440 Hz tone leaks under the noise.
+const MIDS: [(FilterType, f32, f32); 8] = [
+    (FilterType::HighPass, 1200.0, 0.707),
+    (FilterType::HighPass, 1200.0, 0.707),
+    (FilterType::HighPass, 1200.0, 0.707),
+    (FilterType::HighPass, 1200.0, 0.707),
+    (FilterType::LowPass, 2000.0, 0.707),
+    (FilterType::LowPass, 2000.0, 0.707),
+    (FilterType::LowPass, 2000.0, 0.707),
+    (FilterType::LowPass, 2000.0, 0.707),
+];
+
+#[test]
+fn hiss_lowers_highs_keeps_lows() {
+    let x = hissy();
+    let mut h = create("hiss_reduction").unwrap();
+    let y = processed(&x, h.as_mut());
+    let top = band_db(&x, &TOP, 2.0, 4.0) - band_db(&y, &TOP, 2.0, 4.0);
+    assert!(top >= 15.0, "6-12 kHz dropped {top} dB");
+    let tone = band_db(&x, &TONE, 2.0, 4.0) - band_db(&y, &TONE, 2.0, 4.0);
+    assert!(tone.abs() <= 0.5, "440 Hz changed {tone} dB");
+    let mids = band_db(&x, &MIDS, 2.0, 4.0) - band_db(&y, &MIDS, 2.0, 4.0);
+    assert!(mids.abs() <= 1.0, "1.2-2 kHz noise changed {mids} dB");
+}
+
+#[test]
+fn hiss_only_outputs_the_removed_part() {
+    let x = hissy();
+    let y = processed(&x, create("hiss_reduction").unwrap().as_mut());
+    let mut only = create("hiss_reduction").unwrap();
+    assert!(only.set_param("hiss_only", 1.0));
+    let n = processed(&x, only.as_mut());
+    let residual: Vec<f32> = x.iter().zip(&y).zip(&n).map(|((a, b), c)| a - b - c).collect();
+    assert!(rms_db(&residual) < -50.0, "residual {}", rms_db(&residual));
+}
