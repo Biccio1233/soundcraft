@@ -456,3 +456,29 @@ fn hiss_only_outputs_the_removed_part() {
     let residual: Vec<f32> = x.iter().zip(&y).zip(&n).map(|((a, b), c)| a - b - c).collect();
     assert!(rms_db(&residual) < -50.0, "residual {}", rms_db(&residual));
 }
+
+// ---- clip repair ----------------------------------------------------------------------------------
+
+fn amp_sine(hz: f32, amp: f32, frames: usize) -> Vec<f32> {
+    (0..frames).map(|i| amp * (std::f32::consts::TAU * hz * i as f32 / SR).sin()).collect()
+}
+
+#[test]
+fn declip_restores_a_clipped_sine() {
+    let truth = amp_sine(200.0, 0.9, SR as usize);
+    let clipped: Vec<f32> = truth.iter().map(|v| v.clamp(-0.5, 0.5)).collect();
+    let mut d = create("declip").unwrap();
+    assert!(d.set_param("threshold_db", 20.0 * 0.5f32.log10() - 0.01));
+    let fixed = processed(&clipped, d.as_mut());
+    let err = |x: &[f32]| rms_db(&x.iter().zip(&truth).map(|(a, b)| a - b).collect::<Vec<_>>());
+    let (before, after) = (err(&clipped), err(&fixed));
+    assert!(before - after >= 6.0, "error {before} dB → {after} dB");
+}
+
+#[test]
+fn declip_leaves_clean_audio_alone() {
+    let x = amp_sine(200.0, 0.4, SR as usize);
+    let mut d = create("declip").unwrap();
+    assert!(d.set_param("threshold_db", -6.0));
+    assert_eq!(processed(&x, d.as_mut()), x);
+}

@@ -47,6 +47,7 @@ pub(crate) static REGISTRY: &[&PluginInfo] = &[
     &crate::restore::adaptive::ADAPTIVE_INFO,
     &crate::restore::dehum::DEHUM_INFO,
     &crate::restore::hiss::HISS_INFO,
+    &crate::restore::declip::DECLIP_INFO,
 ];
 
 /// Constructs an (unprepared) plugin by id.
@@ -83,6 +84,7 @@ pub(crate) fn instantiate(id: &str) -> Option<Box<dyn Plugin>> {
         "adaptive_noise_reduction" => Box::new(crate::restore::AdaptiveNoiseReduction::new()),
         "dehum" => Box::new(crate::restore::Dehum::new()),
         "hiss_reduction" => Box::new(crate::restore::HissReduction::new()),
+        "declip" => Box::new(crate::restore::Declip::new()),
         _ => return None,
     })
 }

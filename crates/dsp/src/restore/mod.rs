@@ -3,6 +3,7 @@
 //! reverb). Algorithms follow the papers named in each module; none comes from a product.
 
 pub mod adaptive;
+pub mod declip;
 pub mod dehum;
 mod gain;
 pub mod hiss;
@@ -11,6 +12,7 @@ mod print;
 mod stft;
 
 pub use adaptive::{AdaptiveNoiseReduction, MinTracker};
+pub use declip::Declip;
 pub use dehum::{Dehum, detect_mains};
 pub use gain::{e1, lsa_gain};
 pub use hiss::HissReduction;
