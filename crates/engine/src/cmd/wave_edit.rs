@@ -100,6 +100,9 @@ pub fn prune_pool(s: &mut Session) {
 fn finish_edit(e: &mut Engine, label: String) -> Result<Value> {
     prune_pool(e.session_mut());
     e.set_undo_label(label);
+    // The edit has changed the document, so pushing its undo step will clear redo: do it now, so
+    // the budget doesn't drop undo steps to make room for redo steps about to disappear.
+    e.clear_redo();
     super::wave::enforce_history_budget(e)?;
     info(e)
 }
@@ -157,8 +160,17 @@ fn process_range(e: &mut Engine, cmd: &str, p: &Value, verb: &str, f: impl FnOnc
     replace_range(e, r, all, label)
 }
 
+/// The range cut/copy/delete act on: explicit `start`/`end`, else the selection — never the whole
+/// file by default, so a cursor alone (an empty selection) can't remove all the audio.
 fn selected_range(e: &Engine, cmd: &str, p: &Value) -> Result<Range> {
-    let r = wave_range(e, cmd, p)?;
+    let explicit = ["start", "end", "length"].iter().any(|k| p.get(k).is_some());
+    let r = if explicit {
+        wave_range(e, cmd, p)?
+    } else {
+        let len = file_len(e);
+        let s = e.session().edit.selection;
+        Range::new(s.start.clamp(0, len), s.end.clamp(0, len))
+    };
     if r.is_empty() { Err(bad(cmd, "select a range first")) } else { Ok(r) }
 }
 
@@ -247,16 +259,26 @@ fn paste(e: &mut Engine, p: &Value) -> Result<Value> {
     insert_audio(e, ID, at, clip.channels, "Paste")
 }
 
+/// Frames of `secs` of silence at `sample_rate`, refused (before anything is allocated) when out of
+/// range or when the file would outgrow the editing limit.
+fn silence_frames(cmd: &str, secs: f64, sample_rate: u32, file_len: Samples) -> Result<usize> {
+    if !(secs.is_finite() && secs > 0.0 && secs <= MAX_SILENCE_SECONDS) {
+        return Err(bad(cmd, format!("`seconds` must be between 0 and {MAX_SILENCE_SECONDS}")));
+    }
+    let frames = (secs * f64::from(sample_rate)).round() as u64;
+    let max = soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as u64;
+    if (file_len.max(0) as u64).saturating_add(frames) > max {
+        return Err(EngineError::Unsupported(format!("files longer than {max} frames")));
+    }
+    usize::try_from(frames).map_err(|_| EngineError::Unsupported("silence too long".into()))
+}
+
 fn insert_silence(e: &mut Engine, p: &Value) -> Result<Value> {
     const ID: &str = "wave.insert_silence";
     let w = wave(e)?.clone();
-    let secs = p
-        .get("seconds")
-        .and_then(Value::as_f64)
-        .filter(|s| s.is_finite() && *s > 0.0 && *s <= MAX_SILENCE_SECONDS)
-        .ok_or_else(|| bad(ID, format!("`seconds` must be between 0 and {MAX_SILENCE_SECONDS}")))?;
+    let secs = p.get("seconds").and_then(Value::as_f64).unwrap_or(f64::NAN);
+    let frames = silence_frames(ID, secs, w.sample_rate, file_len(e))?;
     let at = position_param(e, ID, p, "at")?.unwrap_or(e.session().edit.selection.start).clamp(0, file_len(e));
-    let frames = (secs * f64::from(w.sample_rate)).round() as usize;
     insert_audio(e, ID, at, vec![vec![0.0; frames]; w.channels], "Insert Silence")
 }
 
@@ -480,6 +502,33 @@ mod tests {
         assert!(e.execute("wave.gain", &json!({"db": 200.0})).is_err());
         assert!(e.execute("wave.gain", &json!({})).is_err());
         assert_eq!(render_file(&e).unwrap()[0].len(), 144_000);
+    }
+
+    #[test]
+    fn cut_copy_and_delete_need_a_range_not_a_cursor() {
+        let mut e = ramp("cursor_only", 1);
+        for sel in [json!({"start": 1_000, "end": 1_000}), json!({"start": 0, "end": 0})] {
+            run(&mut e, "wave.select", sel);
+            for id in ["wave.cut", "wave.copy", "wave.delete"] {
+                let err = e.execute(id, &json!({})).unwrap_err().to_string();
+                assert!(err.contains("select"), "{id}: {err}");
+            }
+            assert_eq!(render_file(&e).unwrap()[0].len(), 144_000);
+        }
+        // Processing a cursor-only selection still means the whole file.
+        run(&mut e, "wave.gain", json!({"db": -6.0}));
+        assert_eq!(e.undo_label(), Some("Gain -6.0 dB 0:00.000–0:03.000"));
+    }
+
+    #[test]
+    fn silence_length_is_checked_before_any_allocation() {
+        let max = soundcraft_dsp::offline::MAX_OFFLINE_SAMPLES as Samples;
+        assert_eq!(silence_frames("t", 1.0, 48_000, 0).ok(), Some(48_000));
+        // An hour at 96 kHz is 345.6 M frames, over the 2^28 limit: refused, nothing allocated.
+        assert!(silence_frames("t", 3_600.0, 96_000, 0).is_err());
+        assert!(silence_frames("t", 1.0, 48_000, max - 10).is_err());
+        assert!(silence_frames("t", f64::NAN, 48_000, 0).is_err());
+        assert!(silence_frames("t", -1.0, 48_000, 0).is_err());
     }
 
     #[test]

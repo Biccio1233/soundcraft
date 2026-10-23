@@ -16,6 +16,9 @@ const DITHER_SEED: u64 = 0x5743_4146_5400_0000;
 const MONO_PLAYBACK_DB: f32 = 3.0103;
 /// Default history memory budget.
 pub const DEFAULT_HISTORY_BUDGET_MB: u32 = 2048;
+/// Step limit for a WaveCraft file: far above anything the byte budget lets through, so the
+/// budget (which counts and reports what it drops) decides, never a silent step count.
+const WAVE_HISTORY_LIMIT: usize = 1_000_000;
 
 /// The file WaveCraft has open.
 #[derive(Debug, Clone, PartialEq)]
@@ -43,7 +46,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Open File",
             [],
             None,
-            "{path} — open one audio file (WAV, AIFF, FLAC, MP3, M4A, Ogg…) as the WaveCraft document; replaces the open one and clears the history",
+            "{path, discard?: bool} — open one audio file (WAV, AIFF, FLAC, MP3, M4A, Ogg…) as the WaveCraft document, replacing the open one and clearing the history; refuses when the open file has unsaved changes unless `discard` is true, and never replaces a multitrack session",
             always,
             open
         ),
@@ -169,6 +172,13 @@ fn check_limits(cmd: &str, frames: u64, channels: usize) -> Result<()> {
 fn open(e: &mut Engine, p: &Value) -> Result<Value> {
     const ID: &str = "wave.open";
     let path = str_param(p, "path").filter(|s| !s.trim().is_empty()).ok_or_else(|| bad(ID, "`path` required"))?.to_string();
+    // WaveCraft's open never replaces a SoundCraft session, and never drops unsaved edits unasked.
+    if e.wave.is_none() && !e.session().tracks.is_empty() {
+        return Err(bad(ID, "this engine holds a multitrack session; wave.open is WaveCraft's single-file open"));
+    }
+    if e.wave.is_some() && e.is_dirty() && !p.get("discard").and_then(Value::as_bool).unwrap_or(false) {
+        return Err(bad(ID, "the open file has unsaved changes: save or export it first, or pass `discard: true`"));
+    }
     let bytes = io::read_file(&path)?;
     let ext = std::path::Path::new(&path).extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase);
     let audio_err = |err: soundcraft_audio_io::AudioError| EngineError::Io(format!("{path}: {err}"));
@@ -192,6 +202,7 @@ fn open(e: &mut Engine, p: &Value) -> Result<Value> {
         track.mixer.volume_db = MONO_PLAYBACK_DB;
     }
     e.replace_session(s);
+    e.history_limit = WAVE_HISTORY_LIMIT;
     e.wave = Some(WaveFile {
         path: Some(path),
         format: info.format,
@@ -743,6 +754,72 @@ pub(crate) mod tests {
         assert_eq!(e.wave.as_ref().map(|w| w.spectral), Some(false));
         assert!(!e.is_dirty());
         assert_eq!(e.undo_history().len(), n);
+    }
+
+    #[test]
+    fn open_refuses_over_a_multitrack_session() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({})).unwrap();
+        let dir = tmp_dir("open_over_session");
+        let path = dir.join("a.wav");
+        write_wav(&path, &noise(48_000, 1, 4_800), BitDepth::Int16);
+        let err = e.execute("wave.open", &json!({"path": path.to_str().unwrap()})).unwrap_err().to_string();
+        assert!(err.contains("multitrack"), "{err}");
+        assert_eq!((e.session().tracks.len(), e.undo_history().len(), e.wave.is_none()), (1, 1, true));
+    }
+
+    #[test]
+    fn open_needs_discard_when_the_file_has_unsaved_changes() {
+        let (mut e, dir) = opened("open_discard", &noise(48_000, 1, 4_800), BitDepth::Int16);
+        let other = dir.join("other.wav");
+        write_wav(&other, &noise(48_000, 2, 4_800), BitDepth::Int16);
+        e.execute("wave.gain", &json!({"db": 1.0})).unwrap();
+        let err = e.execute("wave.open", &json!({"path": other.to_str().unwrap()})).unwrap_err().to_string();
+        assert!(err.contains("unsaved"), "{err}");
+        assert_eq!(e.wave.as_ref().map(|w| w.channels), Some(1));
+        e.execute("wave.open", &json!({"path": other.to_str().unwrap(), "discard": true})).unwrap();
+        assert_eq!(e.wave.as_ref().map(|w| w.channels), Some(2));
+    }
+
+    #[test]
+    fn open_waits_for_a_take_being_recorded() {
+        let mut e = Engine::default();
+        e.transport.recording = true;
+        assert!(e.blocked_while_recording("wave.open"));
+    }
+
+    #[test]
+    fn undo_then_a_new_edit_keeps_the_open_state() {
+        // 10 s stereo float: each full-file step holds 3.84 MB. 17 steps fill a 64 MB budget.
+        let (mut e, _) = opened("budget_redo", &noise(48_000, 2, 480_000), BitDepth::Float32);
+        let orig = render_file(&e).unwrap();
+        e.execute("wave.history_budget", &json!({"mb": 64})).unwrap();
+        for _ in 0..17 {
+            e.execute("wave.gain", &json!({"db": 0.5})).unwrap();
+        }
+        for _ in 0..15 {
+            e.undo();
+        }
+        e.execute("wave.gain", &json!({"db": -1.0})).unwrap();
+        let h = e.execute("wave.history", &json!({})).unwrap();
+        assert_eq!(h["rows"][0]["label"], "Open", "{h}");
+        e.execute("wave.history_jump", &json!({"index": 0})).unwrap();
+        assert_eq!(render_file(&e).unwrap(), orig);
+    }
+
+    #[test]
+    fn long_histories_keep_the_open_state() {
+        // More steps than the engine's default 200-step limit, on a tiny file: the byte budget,
+        // not a step count, decides what goes, so row 0 is still the opened file.
+        let (mut e, _) = opened("long_history", &noise(48_000, 1, 480), BitDepth::Float32);
+        let orig = render_file(&e).unwrap();
+        for _ in 0..210 {
+            e.execute("wave.gain", &json!({"db": 0.01})).unwrap();
+        }
+        let h = e.execute("wave.history", &json!({})).unwrap();
+        assert_eq!((h["rows"][0]["label"].as_str(), h["rows"].as_array().map(Vec::len)), (Some("Open"), Some(211)));
+        e.execute("wave.history_jump", &json!({"index": 0})).unwrap();
+        assert_eq!(render_file(&e).unwrap(), orig);
     }
 
     #[test]

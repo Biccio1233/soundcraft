@@ -291,6 +291,12 @@ impl Engine {
         total
     }
 
+    /// Forget the redo steps. A command that changes the document loses them anyway when its undo
+    /// step is pushed; clearing them first lets it measure the history it will really keep.
+    pub fn clear_redo(&mut self) {
+        self.redo.clear();
+    }
+
     /// Drop the oldest undo steps while the history holds more than `budget` bytes of audio
     /// (redo steps are kept). Returns how many steps were dropped.
     pub fn trim_history_to_bytes(&mut self, budget: u64) -> usize {
@@ -352,7 +358,7 @@ impl Engine {
     /// Whether command `id` must wait for the take being recorded: nothing may replace the
     /// session or quit under it.
     pub fn blocked_while_recording(&self, id: &str) -> bool {
-        self.transport.recording && matches!(id, "session.new" | "session.open" | "session.close" | "session.revert" | "app.quit")
+        self.transport.recording && matches!(id, "session.new" | "session.open" | "session.close" | "session.revert" | "app.quit" | "wave.open")
     }
 
     /// Run a command by id. Never panics: escaped panics become `EngineError::Internal` and the
