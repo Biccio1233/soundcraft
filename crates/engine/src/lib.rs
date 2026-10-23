@@ -139,6 +139,10 @@ pub struct Engine {
     /// The edit selection (range, tracks) before the last change, for Restore Last Selection.
     /// Kept out of the document so selecting never marks the session modified.
     pub last_selection: Option<(soundcraft_time::Range, Vec<TrackId>)>,
+    /// Label for the undo step of the command now running (see `set_undo_label`).
+    pending_label: Option<String>,
+    /// The single file WaveCraft has open, when this engine drives WaveCraft (`wave.*` commands).
+    pub wave: Option<()>,
 }
 
 impl Default for Engine {
@@ -169,6 +173,8 @@ impl Engine {
             merge_hold: None,
             messages: Vec::new(),
             last_selection: None,
+            pending_label: None,
+            wave: None,
         }
     }
 
@@ -240,6 +246,57 @@ impl Engine {
     }
     pub fn undo_history(&self) -> Vec<String> {
         self.undo.iter().map(|h| h.label.clone()).collect()
+    }
+    /// Redo labels, the next redo first (the order they would be redone in).
+    pub fn redo_history(&self) -> Vec<String> {
+        self.redo.iter().rev().map(|h| h.label.clone()).collect()
+    }
+
+    /// Name the undo step of the command now running, instead of its spec label. Only a command's
+    /// own `run` should call this: `execute` clears it before every command.
+    pub fn set_undo_label(&mut self, label: impl Into<String>) {
+        self.pending_label = Some(label.into());
+    }
+
+    /// Undo or redo until `undo_len` steps are undoable. `false` (and nothing changes) when there
+    /// aren't that many steps.
+    pub fn history_jump(&mut self, undo_len: usize) -> bool {
+        if undo_len > self.undo.len().saturating_add(self.redo.len()) {
+            return false;
+        }
+        while self.undo.len() > undo_len && self.undo() {}
+        while self.undo.len() < undo_len && self.redo() {}
+        true
+    }
+
+    /// Bytes of decoded audio held by the document and every undo/redo snapshot, each buffer
+    /// counted once however many snapshots share it.
+    pub fn history_bytes(&self) -> u64 {
+        let mut seen = std::collections::HashSet::new();
+        let mut total = 0u64;
+        let docs = std::iter::once(&self.doc).chain(self.undo.iter().map(|h| &h.doc)).chain(self.redo.iter().map(|h| &h.doc));
+        for doc in docs {
+            for id in doc.pool.ids() {
+                if let Some(a) = doc.pool.get(id)
+                    && seen.insert(Arc::as_ptr(a))
+                {
+                    let samples = (a.buffer.frames() as u64).saturating_mul(a.buffer.num_channels() as u64);
+                    total = total.saturating_add(samples.saturating_mul(4));
+                }
+            }
+        }
+        total
+    }
+
+    /// Drop the oldest undo steps while the history holds more than `budget` bytes of audio
+    /// (redo steps are kept). Returns how many steps were dropped.
+    pub fn trim_history_to_bytes(&mut self, budget: u64) -> usize {
+        let mut dropped = 0;
+        while !self.undo.is_empty() && self.history_bytes() > budget {
+            self.undo.remove(0);
+            dropped += 1;
+        }
+        dropped
     }
 
     pub fn undo(&mut self) -> bool {
@@ -316,6 +373,7 @@ impl Engine {
         let before = Arc::clone(&self.doc);
         let rev = self.revision;
         let dirty = self.dirty;
+        self.pending_label = None;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (spec.run)(self, params)));
         let result = match result {
             Ok(r) => r,
@@ -333,8 +391,9 @@ impl Engine {
         match result {
             Ok(v) => {
                 cmd::remember_selection(self, &before);
+                let label = self.pending_label.take();
                 if spec.undoable && !Arc::ptr_eq(&before, &self.doc) {
-                    self.push_undo(spec.label, before);
+                    self.push_undo(label.as_deref().unwrap_or(spec.label), before);
                 }
                 if spec.journal {
                     self.journal.push((id.to_string(), params.clone()));
@@ -519,5 +578,109 @@ mod dirty_tests {
         assert!(e.is_dirty());
         e.undo();
         assert!(!e.is_dirty());
+    }
+}
+
+#[cfg(test)]
+mod history_tests {
+    use super::*;
+    use soundcraft_audio_io::{AudioBuffer, FileFormat};
+    use soundcraft_model::{ChannelFormat, ClipContent, TrackKind};
+
+    /// A one-track session holding one 1 s mono clip at 48 kHz (192 000 bytes of f32 audio).
+    fn engine_with_one_second() -> (Engine, TrackId) {
+        let mut e = Engine::default();
+        let s = e.session_mut();
+        let t = s.add_track(TrackKind::Audio, ChannelFormat::Mono, None);
+        let src = io::add_source(s, "one", AudioBuffer::new(48_000, 1, 48_000), None, FileFormat::Wav);
+        let id = s.new_clip_id();
+        edit::place_clip(s, t, Clip::audio(id, "one", src, 0, 0, 48_000));
+        (e, t)
+    }
+
+    /// Drop pool sources no clip references (what WaveCraft's commands do after each step).
+    fn prune(e: &mut Engine) {
+        let used: Vec<_> = e
+            .session()
+            .tracks
+            .iter()
+            .flat_map(|t| t.clips().iter())
+            .filter_map(|c| match c.content {
+                ClipContent::Audio { source, .. } => Some(source),
+                _ => None,
+            })
+            .collect();
+        let s = e.session_mut();
+        let stale: Vec<_> = s.pool.ids().filter(|id| !used.contains(id)).collect();
+        for id in stale {
+            s.pool.remove(id);
+        }
+    }
+
+    #[test]
+    fn stale_undo_label_is_ignored() {
+        let mut e = Engine::default();
+        e.set_undo_label("X");
+        e.execute("track.new", &json!({})).unwrap();
+        assert_ne!(e.undo_label(), Some("X"));
+    }
+
+    #[test]
+    fn undo_label_override_names_the_step() {
+        let mut e = Engine::default();
+        e.execute("test.relabel", &json!({})).unwrap();
+        assert_eq!(e.undo_history().last().map(String::as_str), Some("custom"));
+    }
+
+    #[test]
+    fn history_jump_moves_both_ways() {
+        let mut e = Engine::default();
+        for _ in 0..3 {
+            e.execute("track.new", &json!({})).unwrap();
+        }
+        assert!(e.history_jump(1));
+        assert_eq!((e.undo_history().len(), e.redo_history().len()), (1, 2));
+        assert_eq!(e.session().tracks.len(), 1);
+        assert!(e.history_jump(3));
+        assert_eq!((e.undo_history().len(), e.redo_history().len()), (3, 0));
+        assert_eq!(e.session().tracks.len(), 3);
+        assert!(!e.history_jump(9));
+        assert_eq!((e.undo_history().len(), e.redo_history().len()), (3, 0));
+    }
+
+    #[test]
+    fn redo_history_lists_the_next_redo_first() {
+        let mut e = Engine::default();
+        e.execute("track.new", &json!({})).unwrap();
+        e.execute("test.relabel", &json!({})).unwrap();
+        e.undo();
+        e.undo();
+        assert_eq!(e.redo_history().first().map(String::as_str), e.redo_label());
+        assert_eq!(e.redo_history().last().map(String::as_str), Some("custom"));
+    }
+
+    #[test]
+    fn history_bytes_counts_shared_audio_once() {
+        let (mut e, _) = engine_with_one_second();
+        for _ in 0..3 {
+            e.execute("track.new", &json!({})).unwrap();
+        }
+        assert_eq!(e.history_bytes(), 192_000);
+    }
+
+    #[test]
+    fn trim_history_drops_oldest_first() {
+        let (mut e, t) = engine_with_one_second();
+        e.execute("edit.select", &json!({"tracks": [t.0], "start": 0, "end": 48_000})).unwrap();
+        for _ in 0..3 {
+            e.execute("audiosuite.process", &json!({"process": "gain", "params": {"db": 1.0}})).unwrap();
+            prune(&mut e);
+        }
+        assert_eq!(e.history_bytes(), 4 * 192_000);
+        assert_eq!(e.trim_history_to_bytes(2 * 192_000), 2);
+        assert_eq!(e.history_bytes(), 2 * 192_000);
+        assert!(e.can_undo());
+        assert_eq!(e.trim_history_to_bytes(0), 1);
+        assert!(!e.can_undo());
     }
 }

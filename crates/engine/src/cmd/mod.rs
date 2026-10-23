@@ -136,6 +136,8 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(sampler::specs());
         v.extend(video::specs());
         v.extend(zoom_toggle::specs());
+        #[cfg(test)]
+        v.extend(test_specs());
         v
     })
 }
@@ -325,6 +327,17 @@ pub fn clip_ids_param(e: &Engine, p: &Value) -> Vec<ClipId> {
         .filter(|t| s.edit.selected_tracks.contains(&t.id))
         .flat_map(|t| t.clips().iter().filter(move |c| if r.is_empty() { c.range().contains(r.start) } else { c.range().overlaps(&r) }).map(|c| c.id))
         .collect()
+}
+
+/// Commands that exist only in tests, to exercise engine mechanisms no real command isolates.
+#[cfg(test)]
+fn test_specs() -> Vec<CommandSpec> {
+    fn relabel(e: &mut Engine, _: &Value) -> Result<Value> {
+        e.set_undo_label("custom");
+        e.session_mut().add_track(soundcraft_model::TrackKind::Audio, soundcraft_model::ChannelFormat::Mono, None);
+        Ok(Value::Null)
+    }
+    vec![cmd!("test.relabel", "Relabel Test", [], None, "{}", always, relabel)]
 }
 
 #[cfg(test)]
