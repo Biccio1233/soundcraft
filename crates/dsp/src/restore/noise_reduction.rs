@@ -69,11 +69,20 @@ pub struct NoiseReduction {
     channels: usize,
     stft: Stft,
     print: Option<NoisePrint>,
+    /// For each processed channel, the print channel it uses (default: the same index).
+    channel_map: Vec<usize>,
     /// Noise power per bin and channel at the current frame size (zero where there is none).
     lambda: Vec<Vec<f32>>,
     gain: Vec<Vec<f32>>,
     gamma: Vec<Vec<f32>>,
+    /// The noise power per bin must be rebuilt (frame size, offset, bands or print changed).
     dirty: bool,
+    /// The suppression state must restart (only when the frame size changes: other settings take
+    /// effect smoothly, so dragging a slider in the rack doesn't let noise through).
+    restart: bool,
+    /// Offset and band levels the noise power was last built from.
+    built_offset: f32,
+    built_bands: [f32; BANDS],
     has_noise: bool,
 }
 
@@ -91,10 +100,14 @@ impl NoiseReduction {
             channels: 0,
             stft: Stft::new(),
             print: None,
+            channel_map: Vec::new(),
             lambda: Vec::new(),
             gain: Vec::new(),
             gamma: Vec::new(),
             dirty: true,
+            restart: true,
+            built_offset: f32::NAN,
+            built_bands: [f32::NAN; BANDS],
             has_noise: false,
         };
         nr.prepare(48_000.0, 1024, 2);
@@ -106,7 +119,16 @@ impl NoiseReduction {
         let mut nr = Self::new();
         nr.print = Some(print);
         nr.dirty = true;
+        nr.restart = true;
         nr
+    }
+
+    /// Which print channel each processed channel uses: processing only the right channel of a
+    /// stereo file passes `[1]`, so it is cleaned with the right channel's print.
+    pub fn with_channels(mut self, map: Vec<usize>) -> Self {
+        self.channel_map = map;
+        self.dirty = true;
+        self
     }
 
     fn fft(&self) -> usize {
@@ -114,8 +136,17 @@ impl NoiseReduction {
     }
 
     fn update(&mut self) {
-        self.stft.set_size(self.fft());
-        self.dirty = true;
+        let fft = self.fft();
+        if fft != self.stft.size() {
+            self.stft.set_size(fft);
+            self.dirty = true;
+            self.restart = true;
+        }
+        let offset_changed = self.p.v(OFFSET).to_bits() != self.built_offset.to_bits();
+        let bands_changed = (0..BANDS).any(|i| self.p.v(BAND0 + i).to_bits() != self.built_bands[i].to_bits());
+        if offset_changed || bands_changed {
+            self.dirty = true;
+        }
     }
 
     /// Rebuild the per-bin noise power for the current frame size (no allocation).
@@ -132,16 +163,21 @@ impl NoiseReduction {
         for (i, b) in band_vals.iter_mut().enumerate() {
             *b = self.p.v(BAND0 + i);
         }
+        self.built_offset = self.p.v(OFFSET);
+        self.built_bands = band_vals;
         for (c, lam) in self.lambda.iter_mut().enumerate() {
             let out = &mut lam[..bins];
             match &self.print {
-                Some(print) => print.bin_psd(c, n, sr, out),
+                Some(print) => print.bin_psd(self.channel_map.get(c).copied().unwrap_or(c), n, sr, out),
                 None if bands_live => bands_to_bins(&band_vals, n, sr, out),
                 None => out.iter_mut().for_each(|v| *v = 0.0),
             }
             out.iter_mut().for_each(|v| *v = if v.is_finite() && *v > 0.0 { *v * scale } else { 0.0 });
         }
-        self.reset_state();
+        if self.restart {
+            self.restart = false;
+            self.reset_state();
+        }
     }
 
     fn reset_state(&mut self) {
@@ -162,6 +198,7 @@ impl Plugin for NoiseReduction {
         self.gain = vec![vec![1.0; MAX_BINS]; self.channels];
         self.gamma = vec![vec![1.0; MAX_BINS]; self.channels];
         self.dirty = true;
+        self.restart = true;
     }
 
     fn reset(&mut self) {

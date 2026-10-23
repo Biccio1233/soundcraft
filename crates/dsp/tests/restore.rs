@@ -541,3 +541,68 @@ fn dereverb_auto_gain_is_bounded_in_silence() {
     let peak_out = y.iter().fold(0.0f32, |m, v| m.max(v.abs()));
     assert!(peak_out < 4.0 * peak_in, "peak {peak_out} vs input {peak_in}");
 }
+
+// ---- final-review regressions ---------------------------------------------------------------------
+
+/// Hiss at −70 dBFS under a loud steady 100 Hz tone (a held bass note): the tracked floor of the
+/// tone's bins must not swamp the floor averaged for the highs.
+#[test]
+fn hiss_survives_a_loud_low_tone() {
+    let n = (SR * 4.0) as usize;
+    let mut x = noise(1, n, 10f32.powf(-70.0 / 20.0), 51).remove(0);
+    for (v, s) in x.iter_mut().zip(amp_sine(100.0, 0.9, n)) {
+        *v += s;
+    }
+    let y = processed(&x, create("hiss_reduction").unwrap().as_mut());
+    let top = band_db(&x, &TOP, 2.0, 4.0) - band_db(&y, &TOP, 2.0, 4.0);
+    assert!(top >= 15.0, "6-12 kHz dropped only {top} dB under a loud 100 Hz tone");
+}
+
+/// Mains a little off nominal over long selections, under broadband noise: Auto must still pick
+/// the right family.
+#[test]
+fn detect_mains_handles_off_nominal_hum_on_long_spans() {
+    for (mains, secs, want) in [(49.9f32, 20.0f32, 50.0f32), (49.9, 60.0, 50.0), (50.2, 5.0, 50.0), (59.9, 20.0, 60.0)] {
+        let n = (SR * secs) as usize;
+        let mut x = noise(1, n, 10f32.powf(-40.0 / 20.0), 53).remove(0);
+        for h in 1..=4 {
+            for (v, s) in x.iter_mut().zip(sine(mains * h as f32, -30.0, n)) {
+                *v += s;
+            }
+        }
+        assert_eq!(detect_mains(&[x], SR), want, "{mains} Hz over {secs} s");
+    }
+}
+
+/// Changing a parameter in the rack (a slider drag) must not restart the suppression and let the
+/// noise through.
+#[test]
+fn nr_parameter_change_does_not_puff_noise() {
+    let x = synthetic();
+    let bands = print_of_first_second(&x).bands_db();
+    let mut nr = create("noise_reduction").unwrap();
+    for (i, b) in bands.iter().enumerate() {
+        nr.set_param(&format!("nb{i:02}"), *b);
+    }
+    nr.prepare(SR, 512, 1);
+    nr.reset();
+    let noise_only = x[..SR as usize].to_vec();
+    let mut input = noise_only.clone();
+    input.extend_from_slice(&noise_only);
+    let mut out = Vec::new();
+    let mut buf = vec![vec![0.0f32; 512]];
+    for (i, chunk) in input.chunks(512).enumerate() {
+        if i == (SR as usize * 3 / 2) / 512 {
+            assert!(nr.set_param("floor_db", -39.0));
+            assert!(nr.set_param("smoothing", 99.4));
+        }
+        buf[0][..chunk.len()].copy_from_slice(chunk);
+        nr.process(&mut buf, chunk.len());
+        out.extend_from_slice(&buf[0][..chunk.len()]);
+    }
+    let lat = nr.latency();
+    let at = |a: f32, b: f32| rms_db(&out[(a * SR) as usize + lat..(b * SR) as usize + lat]);
+    // Frames processed after the change cover the frame before it, so the window straddles 1.5 s.
+    let (steady, around) = (at(1.1, 1.35), at(1.38, 1.62));
+    assert!(around - steady <= 2.0, "noise rose from {steady} to {around} dB around a parameter change");
+}

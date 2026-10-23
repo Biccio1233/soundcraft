@@ -27,7 +27,7 @@ const CUTOFF: usize = 2;
 const HISS_ONLY: usize = 3;
 
 pub static HISS_PARAMS: [ParamInfo; 4] = [
-    lin("threshold_db", "Noise floor", 0.0, 40.0, 10.0, Unit::Db),
+    lin("threshold_db", "Noise floor", 0.0, 40.0, 12.0, Unit::Db),
     lin("reduce_db", "Reduce by", 0.0, 60.0, 24.0, Unit::Db),
     log("cutoff_hz", "Cutoff", 1000.0, 16_000.0, 4000.0, Unit::Hz),
     toggle("hiss_only", "Output hiss only", false),
@@ -142,17 +142,19 @@ impl Plugin for HissReduction {
             for (l, p) in lane.level[..bins].iter_mut().zip(&lane.power[..bins]) {
                 *l = LEVEL_SMOOTH * *l + (1.0 - LEVEL_SMOOTH) * p;
             }
-            // Running mean of the tracked floor over ±FLOOR_SPREAD bins.
+            // Running mean of the tracked floor over ±FLOOR_SPREAD bins, summed in f64: a loud
+            // steady bin (a held bass note) is ~1e10 times the hiss, and an f32 sum would never
+            // give the small values back once it has passed through.
             let noise = lane.tracker.noise();
-            let mut sum: f32 = noise[..bins.min(FLOOR_SPREAD + 1)].iter().sum();
+            let mut sum: f64 = noise[..bins.min(FLOOR_SPREAD + 1)].iter().map(|v| f64::from(*v)).sum();
             for k in 0..bins {
                 let (lo, hi) = (k.saturating_sub(FLOOR_SPREAD), (k + FLOOR_SPREAD).min(bins - 1));
-                lane.floor[k] = sum / (hi - lo + 1) as f32;
+                lane.floor[k] = (sum / (hi - lo + 1) as f64).max(0.0) as f32;
                 if let Some(add) = noise.get(k + FLOOR_SPREAD + 1).filter(|_| k + FLOOR_SPREAD + 1 < bins) {
-                    sum += add;
+                    sum += f64::from(*add);
                 }
                 if k >= FLOOR_SPREAD {
-                    sum -= noise[k - FLOOR_SPREAD];
+                    sum -= f64::from(noise[k - FLOOR_SPREAD]);
                 }
             }
             for k in 0..bins {

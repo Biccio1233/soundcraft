@@ -82,14 +82,26 @@ fn goertzel(x: impl Iterator<Item = f32>, hz: f64, sr: f64) -> f64 {
 }
 
 /// The mains frequency of the hum in `ch`: 60.0 when the 60 Hz family (60…240 Hz) holds more
-/// energy than the 50 Hz one (50…200 Hz), else 50.0.
+/// energy than the 50 Hz one (50…200 Hz), else 50.0. Powers are summed over half-second blocks (2 Hz
+/// bins, as the realtime probe uses), so mains a little off nominal still lands in its bin however
+/// long the selection is.
 pub fn detect_mains(ch: &[Vec<f32>], sample_rate: f32) -> f32 {
     let sr = f64::from(sane_sr(sample_rate));
     let len = ch.iter().map(Vec::len).min().unwrap_or(0);
     let n = ch.len().max(1) as f32;
     let mix = |i: usize| ch.iter().map(|c| c.get(i).copied().unwrap_or(0.0)).sum::<f32>() / n;
-    let family = |f0: f64| (1..=4).map(|h| goertzel((0..len).map(mix), f0 * h as f64, sr)).sum::<f64>();
-    if family(60.0) > family(50.0) { 60.0 } else { 50.0 }
+    let block = ((sr * 0.5) as usize).max(1);
+    let (mut e50, mut e60) = (0.0f64, 0.0f64);
+    let mut start = 0;
+    while start < len {
+        let end = (start + block).min(len);
+        for h in 1..=4 {
+            e50 += goertzel((start..end).map(mix), 50.0 * h as f64, sr);
+            e60 += goertzel((start..end).map(mix), 60.0 * h as f64, sr);
+        }
+        start = end;
+    }
+    if e60 > e50 { 60.0 } else { 50.0 }
 }
 
 /// Running Goertzel state for the realtime *Auto* decision.
