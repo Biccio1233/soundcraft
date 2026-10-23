@@ -24,10 +24,11 @@ const BAND_IDS: [&str; BANDS] = [
 ];
 
 const fn params() -> [ParamInfo; BAND0 + BANDS] {
-    const FILL: ParamInfo = lin("floor_db", "Reduce by", -80.0, 0.0, -30.0, Unit::Db);
+    // Defaults tuned on the F1 real-take acceptance (see docs/wavecraft/README.md).
+    const FILL: ParamInfo = lin("floor_db", "Reduce by", -80.0, 0.0, -40.0, Unit::Db);
     let mut out = [FILL; BAND0 + BANDS];
-    out[OFFSET] = lin("offset_db", "Noise offset", -10.0, 20.0, 3.0, Unit::Db);
-    out[SMOOTHING] = lin("smoothing", "Smoothing", 90.0, 99.9, 98.0, Unit::Percent);
+    out[OFFSET] = lin("offset_db", "Noise offset", -10.0, 20.0, 2.0, Unit::Db);
+    out[SMOOTHING] = lin("smoothing", "Smoothing", 90.0, 99.9, 99.5, Unit::Percent);
     out[FFT] = choice("fft", "FFT size", &FFT_CHOICES, 3);
     out[NOISE_ONLY] = toggle("noise_only", "Output noise only", false);
     let mut i = 0;
