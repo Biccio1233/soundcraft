@@ -14,6 +14,7 @@
 //! Audio is planar `f32`: `io[channel][frame]`.
 
 pub mod biquad;
+pub mod dither;
 pub mod meter;
 pub mod offline;
 mod osc;
@@ -22,6 +23,7 @@ mod params;
 pub mod pitch_detect;
 pub mod plugins;
 pub mod spectrum;
+pub mod stft;
 mod util;
 
 pub use offline::FadeShape;
