@@ -22,6 +22,7 @@ pub mod pan;
 mod params;
 pub mod pitch_detect;
 pub mod plugins;
+pub mod restore;
 pub mod spectrum;
 pub mod stft;
 mod util;
