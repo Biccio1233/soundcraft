@@ -42,3 +42,37 @@ pub fn lsa_gain(xi: f32, gamma: f32) -> f32 {
     let g = ratio * (0.5 * e1(v)).exp();
     if g.is_finite() { g.clamp(0.0, 1.0) } else { 1.0 }
 }
+
+/// One frame of decision-directed (Ephraim–Malah) suppression: `spec` holds bins `0..=n/2`,
+/// `lambda` the noise power per bin, `gain`/`gamma` the previous frame's gain and a-posteriori SNR
+/// (updated in place). Gains are clamped to `[floor, 1]`, and the a-priori SNR never goes below
+/// floor² (so noise alone settles on the floor instead of warbling above it); `noise_only` keeps
+/// what is removed.
+pub(crate) fn dd_frame(
+    spec: &mut [rustfft::num_complex::Complex<f32>],
+    lambda: &[f32],
+    gain: &mut [f32],
+    gamma: &mut [f32],
+    alpha: f32,
+    floor: f32,
+    noise_only: bool,
+) {
+    let xi_min = (floor * floor).max(1e-8);
+    for (((y, l), g), gm) in spec.iter_mut().zip(lambda).zip(gain.iter_mut()).zip(gamma.iter_mut()) {
+        if l.is_nan() || *l <= 1e-30 {
+            *g = 1.0;
+            *gm = 1.0;
+            if noise_only {
+                *y = rustfft::num_complex::Complex::new(0.0, 0.0);
+            }
+            continue;
+        }
+        let post = y.norm_sqr() / l;
+        let post = if post.is_finite() { post } else { 0.0 };
+        let xi = (alpha * *g * *g * *gm + (1.0 - alpha) * (post - 1.0).max(0.0)).max(xi_min);
+        let new = lsa_gain(xi, post).clamp(floor, 1.0);
+        *g = new;
+        *gm = post;
+        *y *= if noise_only { 1.0 - new } else { new };
+    }
+}

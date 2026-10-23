@@ -147,3 +147,118 @@ fn e1_known_values() {
         assert!((got - want).abs() <= 0.01 * want, "E1({x}) = {got}, want {want}");
     }
 }
+
+// ---- shared helpers for the plugin tests --------------------------------------------------------
+
+use soundcraft_dsp::biquad::{Biquad, FilterType};
+use soundcraft_dsp::offline::apply_plugin;
+use soundcraft_dsp::{Plugin, create};
+
+fn db(x: f32) -> f32 {
+    10.0 * x.max(1e-30).log10()
+}
+
+fn rms_db(x: &[f32]) -> f32 {
+    db(x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32)
+}
+
+fn sine(hz: f32, rms_dbfs: f32, frames: usize) -> Vec<f32> {
+    let a = 10f32.powf(rms_dbfs / 20.0) * std::f32::consts::SQRT_2;
+    (0..frames).map(|i| a * (std::f32::consts::TAU * hz * i as f32 / SR).sin()).collect()
+}
+
+fn filtered(x: &[f32], stages: &[(FilterType, f32, f32)]) -> Vec<f32> {
+    let mut y = x.to_vec();
+    for &(kind, hz, q) in stages {
+        let mut f = Biquad::design(kind, hz, q, 0.0, SR);
+        f.process_block(&mut y);
+    }
+    y
+}
+
+/// RMS in dB of `x[from..to]` (seconds) after `stages`.
+fn band_db(x: &[f32], stages: &[(FilterType, f32, f32)], from: f32, to: f32) -> f32 {
+    let y = filtered(x, stages);
+    rms_db(&y[(from * SR) as usize..((to * SR) as usize).min(y.len())])
+}
+
+/// 4–8 kHz, steep enough below (8th order) that a −20 dBFS 440 Hz tone leaks under −150 dB.
+const HIGHS: [(FilterType, f32, f32); 6] = [
+    (FilterType::HighPass, 4000.0, 0.707),
+    (FilterType::HighPass, 4000.0, 0.707),
+    (FilterType::HighPass, 4000.0, 0.707),
+    (FilterType::HighPass, 4000.0, 0.707),
+    (FilterType::LowPass, 8000.0, 0.707),
+    (FilterType::LowPass, 8000.0, 0.707),
+];
+const TONE: [(FilterType, f32, f32); 2] = [(FilterType::BandPass, 440.0, 8.0), (FilterType::BandPass, 440.0, 8.0)];
+
+/// 1 s of white noise at −70 dBFS, then 3 s of 440 Hz at −20 dBFS over the same noise (mono).
+fn synthetic() -> Vec<f32> {
+    let n = (SR * 4.0) as usize;
+    let mut x = noise(1, n, 10f32.powf(-70.0 / 20.0), 21).remove(0);
+    let tone = sine(440.0, -20.0, n);
+    for (i, v) in x.iter_mut().enumerate().skip(SR as usize) {
+        *v += tone[i];
+    }
+    x
+}
+
+fn print_of_first_second(x: &[f32]) -> NoisePrint {
+    NoisePrint::capture(&[x[..SR as usize].to_vec()], SR as u32, 4096).unwrap()
+}
+
+fn processed(x: &[f32], plugin: &mut dyn Plugin) -> Vec<f32> {
+    let mut ch = vec![x.to_vec()];
+    apply_plugin(&mut ch, plugin, SR);
+    ch.remove(0)
+}
+
+// ---- noise reduction ------------------------------------------------------------------------------
+
+use soundcraft_dsp::restore::NoiseReduction;
+
+#[test]
+fn nr_synthetic_tone_kept_noise_lowered() {
+    let x = synthetic();
+    let mut nr = NoiseReduction::with_print(print_of_first_second(&x));
+    let y = processed(&x, &mut nr);
+    let tone = (band_db(&x, &TONE, 2.0, 4.0), band_db(&y, &TONE, 2.0, 4.0));
+    assert!((tone.0 - tone.1).abs() <= 1.0, "tone {tone:?}");
+    let highs = (band_db(&x, &HIGHS, 2.0, 4.0), band_db(&y, &HIGHS, 2.0, 4.0));
+    assert!(highs.0 - highs.1 >= 20.0, "4-8 kHz {highs:?}");
+}
+
+#[test]
+fn nr_noise_only_is_the_difference() {
+    let x = synthetic();
+    let p = print_of_first_second(&x);
+    let y = processed(&x, &mut NoiseReduction::with_print(p.clone()));
+    let mut only = NoiseReduction::with_print(p);
+    assert!(only.set_param("noise_only", 1.0));
+    let n = processed(&x, &mut only);
+    let residual: Vec<f32> = x.iter().zip(&y).zip(&n).map(|((a, b), c)| a - b - c).collect();
+    assert!(rms_db(&residual) < -60.0, "residual {}", rms_db(&residual));
+}
+
+#[test]
+fn nr_band_params_reduce_noise_in_the_rack_path() {
+    let x = synthetic();
+    let bands = print_of_first_second(&x).bands_db();
+    let mut nr = create("noise_reduction").unwrap();
+    for (i, b) in bands.iter().enumerate() {
+        assert!(nr.set_param(&format!("nb{i:02}"), *b), "nb{i:02}");
+    }
+    let y = processed(&x, nr.as_mut());
+    let highs = (band_db(&x, &HIGHS, 2.0, 4.0), band_db(&y, &HIGHS, 2.0, 4.0));
+    assert!(highs.0 - highs.1 >= 15.0, "4-8 kHz {highs:?}");
+}
+
+#[test]
+fn nr_without_print_passes_through() {
+    let x = synthetic();
+    let mut nr = create("noise_reduction").unwrap();
+    let y = processed(&x, nr.as_mut());
+    let worst = x.iter().zip(&y).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
+    assert!(worst < 1e-4, "worst {worst}");
+}

@@ -43,6 +43,7 @@ pub(crate) static REGISTRY: &[&PluginInfo] = &[
     &synth::SYNTH_INFO,
     &drums::DRUM_INFO,
     &sampler::SAMPLER_INFO,
+    &crate::restore::noise_reduction::NR_INFO,
 ];
 
 /// Constructs an (unprepared) plugin by id.
@@ -75,6 +76,7 @@ pub(crate) fn instantiate(id: &str) -> Option<Box<dyn Plugin>> {
         "subtractive_synth" => Box::new(synth::SubtractiveSynth::new()),
         "drum_synth" => Box::new(drums::DrumSynth::new()),
         "sampler" => Box::new(sampler::Sampler::new()),
+        "noise_reduction" => Box::new(crate::restore::NoiseReduction::new()),
         _ => return None,
     })
 }

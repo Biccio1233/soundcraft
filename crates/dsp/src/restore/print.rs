@@ -86,28 +86,11 @@ impl NoisePrint {
         Ok(NoisePrint { sample_rate, fft_size: n, psd })
     }
 
-    /// A one-channel print at 4096 points whose spectrum follows `bands` (dB per band,
-    /// interpolated in dB over log frequency between band centres).
+    /// A one-channel print at 4096 points whose spectrum follows `bands` (see [`bands_to_bins`]).
     pub fn from_bands_db(bands: &[f32], sample_rate: u32) -> NoisePrint {
         let n = 4096usize;
-        let sr = sample_rate.max(1) as f32;
-        let level = |b: usize| bands.get(b).copied().filter(|v| v.is_finite()).unwrap_or(FLOOR_DB).clamp(FLOOR_DB, 0.0);
-        let psd = (0..=n / 2)
-            .map(|k| {
-                let hz = k as f32 * sr / n as f32;
-                let b = band_of(hz);
-                let c = band_centre_hz(b);
-                let (lo, hi) = if hz < c { (b.saturating_sub(1), b) } else { (b, (b + 1).min(BANDS - 1)) };
-                let (clo, chi) = (band_centre_hz(lo), band_centre_hz(hi));
-                let db = if lo == hi || hz <= 0.0 {
-                    level(b)
-                } else {
-                    let t = ((hz / clo).ln() / (chi / clo).ln()).clamp(0.0, 1.0);
-                    level(lo) + (level(hi) - level(lo)) * t
-                };
-                10f32.powf(db / 10.0)
-            })
-            .collect();
+        let mut psd = vec![0.0f32; n / 2 + 1];
+        bands_to_bins(bands, n, sample_rate, &mut psd);
         NoisePrint { sample_rate, fft_size: n, psd: vec![psd] }
     }
 
@@ -175,5 +158,28 @@ impl NoisePrint {
                 a * (1.0 - t) + b * t
             };
         }
+    }
+}
+
+/// Power per bin (the print's units) for a `fft`-point transform at `sample_rate`, from band levels
+/// in dB interpolated over log frequency between band centres. Writes `fft / 2 + 1` values; never
+/// allocates. Missing or non-finite bands read as [`FLOOR_DB`].
+pub fn bands_to_bins(bands: &[f32], fft: usize, sample_rate: u32, out: &mut [f32]) {
+    let sr = sample_rate.max(1) as f32;
+    let n = fft.max(1);
+    let level = |b: usize| bands.get(b).copied().filter(|v| v.is_finite()).unwrap_or(FLOOR_DB).clamp(FLOOR_DB, 0.0);
+    for (k, v) in out.iter_mut().take(n / 2 + 1).enumerate() {
+        let hz = k as f32 * sr / n as f32;
+        let b = band_of(hz);
+        let c = band_centre_hz(b);
+        let (lo, hi) = if hz < c { (b.saturating_sub(1), b) } else { (b, (b + 1).min(BANDS - 1)) };
+        let (clo, chi) = (band_centre_hz(lo), band_centre_hz(hi));
+        let db = if lo == hi || hz <= 0.0 {
+            level(b)
+        } else {
+            let t = ((hz / clo).ln() / (chi / clo).ln()).clamp(0.0, 1.0);
+            level(lo) + (level(hi) - level(lo)) * t
+        };
+        *v = 10f32.powf(db / 10.0);
     }
 }
