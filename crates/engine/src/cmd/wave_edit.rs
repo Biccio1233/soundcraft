@@ -162,7 +162,7 @@ pub(super) fn process_range(e: &mut Engine, cmd: &str, p: &Value, verb: &str, f:
 
 /// The range cut/copy/delete act on: explicit `start`/`end`, else the selection — never the whole
 /// file by default, so a cursor alone (an empty selection) can't remove all the audio.
-fn selected_range(e: &Engine, cmd: &str, p: &Value) -> Result<Range> {
+pub(super) fn selected_range(e: &Engine, cmd: &str, p: &Value) -> Result<Range> {
     let explicit = ["start", "end", "length"].iter().any(|k| p.get(k).is_some());
     let r = if explicit {
         wave_range(e, cmd, p)?

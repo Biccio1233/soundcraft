@@ -2,7 +2,7 @@
 //! plugin run offline over the selection, one undo step) and amplitude statistics.
 
 use super::wave::{has_file, wave, wave_range, wave_track};
-use super::wave_edit::process_range;
+use super::wave_edit::{process_range, selected_range};
 use super::*;
 use crate::{cmd, io};
 use serde_json::json;
@@ -28,7 +28,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "Capture Noise Print",
             [],
             None,
-            "{start?, end?, fft?: 256..16384} — take the noise print noise reduction removes from the selection (noise alone; the enabled channels); not an undo step",
+            "{start?, end?, fft?: 256..16384} — take the noise print noise reduction removes from the selection (noise alone; every channel gets its own); not an undo step",
             has_file,
             capture
         ),
@@ -102,19 +102,11 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-/// The enabled channels of `r`, rendered.
-fn enabled_channels(e: &Engine, r: Range) -> Result<Vec<Vec<f32>>> {
-    let t = wave_track(e)?;
-    let enabled = wave(e)?.channels_enabled.clone();
-    Ok(soundcraft_mix::render_clips(e.session(), t, r).into_iter().zip(enabled).filter(|(_, on)| *on).map(|(c, _)| c).collect())
-}
-
 fn capture(e: &mut Engine, p: &Value) -> Result<Value> {
     const ID: &str = "wave.noise_print_capture";
-    let r = wave_range(e, ID, p)?;
-    if r.is_empty() {
-        return Err(bad(ID, "select some noise first"));
-    }
+    // A real selection (or explicit start/end), never the whole file by default: a print of the
+    // music would replace a good one, and capturing is not an undo step.
+    let r = selected_range(e, ID, p).map_err(|_| bad(ID, "select a stretch of noise alone first (or pass start and end)"))?;
     let fft = match p.get("fft") {
         None => DEFAULT_PRINT_FFT,
         Some(v) => v
@@ -124,7 +116,8 @@ fn capture(e: &mut Engine, p: &Value) -> Result<Value> {
             .ok_or_else(|| bad(ID, "`fft` must be a power of two from 256 to 16384"))?,
     };
     let sr = wave(e)?.sample_rate;
-    let ch = enabled_channels(e, r)?;
+    // Every channel, whatever is enabled: processing maps each channel to its own print.
+    let ch = soundcraft_mix::render_clips(e.session(), wave_track(e)?, r);
     let print = NoisePrint::capture(&ch, sr, fft).map_err(|m| bad(ID, m))?;
     let seconds = r.len() as f64 / f64::from(sr.max(1));
     if let Some(w) = e.wave.as_mut() {
@@ -268,8 +261,11 @@ fn built_in(id: &str, plugin: &str) -> Result<Box<dyn Plugin>> {
 
 fn noise_reduction(e: &mut Engine, p: &Value) -> Result<Value> {
     const ID: &str = "wave.noise_reduction";
-    let c = wave(e)?.noise_print.clone().ok_or_else(|| bad(ID, NO_PRINT))?;
-    apply(e, ID, p, Box::new(NoiseReduction::with_print(c.print)), |_, _, _| {})
+    let w = wave(e)?;
+    let c = w.noise_print.clone().ok_or_else(|| bad(ID, NO_PRINT))?;
+    // The processed channels are the enabled ones, packed: map each back to its own print channel.
+    let map: Vec<usize> = w.channels_enabled.iter().enumerate().filter(|(_, on)| **on).map(|(i, _)| i).collect();
+    apply(e, ID, p, Box::new(NoiseReduction::with_print(c.print).with_channels(map)), |_, _, _| {})
 }
 
 fn adaptive(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -294,7 +290,18 @@ fn hiss(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn declip(e: &mut Engine, p: &Value) -> Result<Value> {
     const ID: &str = "wave.declip";
-    apply(e, ID, p, built_in(ID, "declip")?, |_, _, _| {})
+    let r = wave_range(e, ID, p)?;
+    let out = apply(e, ID, p, built_in(ID, "declip")?, |_, _, _| {})?;
+    // Redrawn peaks of full-scale clipping go above 0 dBFS; a 16- or 24-bit file would flatten
+    // them again, so say so instead of letting Save quietly undo the repair.
+    let peak = soundcraft_mix::render_clips(e.session(), wave_track(e)?, r).iter().flatten().fold(0.0f32, |m, v| m.max(v.abs()));
+    if peak > 1.0 {
+        e.messages.push(format!(
+            "Clip Repair: peaks now reach {:+.1} dBFS; normalize (or lower the output gain) before saving or exporting at 16 or 24 bits, which would clip them again",
+            soundcraft_dsp::gain_to_db(peak)
+        ));
+    }
+    Ok(out)
 }
 
 fn dereverb(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -498,5 +505,61 @@ mod tests {
         let now = render_file(&e).unwrap();
         assert_eq!(now[1], orig[1]);
         assert_ne!(now[0], orig[0]);
+    }
+
+    #[test]
+    fn capture_needs_a_selection() {
+        let mut e = take("restore_capture_cursor", 1);
+        let before = capture(&mut e)["bands"].clone();
+        run(&mut e, "wave.select", json!({"start": 1000, "end": 1000}));
+        let err = e.execute("wave.noise_print_capture", &json!({})).unwrap_err().to_string();
+        assert!(err.contains("select"), "{err}");
+        assert_eq!(run(&mut e, "wave.noise_print_info", json!({}))["bands"], before, "the print must survive");
+    }
+
+    /// Left noise at −50 dB; right noise at −70 dB plus, after 1 s, a broadband signal at −55 dB.
+    /// Processing the right channel alone must use the right channel's print: against it the signal
+    /// stands 15 dB clear, against the left one (20 dB louder) it would be removed as noise.
+    #[test]
+    fn noise_reduction_uses_each_channels_own_print() {
+        let n = 3 * SR as usize;
+        let mut s = 0x0bad_f00du32;
+        let mut white = |amp: f32| {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            (s as f32 / u32::MAX as f32 - 0.5) * amp * 12f32.sqrt()
+        };
+        let l: Vec<f32> = (0..n).map(|_| white(10f32.powf(-50.0 / 20.0))).collect();
+        let r: Vec<f32> =
+            (0..n).map(|i| white(10f32.powf(-70.0 / 20.0)) + if i >= SR as usize { white(10f32.powf(-55.0 / 20.0)) } else { 0.0 }).collect();
+        let mut e = opened("restore_channel_print", &AudioBuffer { sample_rate: SR, channels: vec![l, r] }, BitDepth::Float32).0;
+        // The print is taken with both channels on; then only the right one is processed.
+        capture(&mut e);
+        run(&mut e, "wave.select", json!({"channels": [1]}));
+        let level = |e: &mut Engine| run(e, "wave.stats", json!({"start": {"seconds": 1.5}, "end": {"seconds": 3}}))["rms_db"].as_f64().unwrap();
+        // Measure the right channel alone: stats mix all channels, so silence the left first.
+        let probe = |e: &mut Engine| {
+            run(e, "wave.select", json!({"channels": [0]}));
+            run(e, "wave.silence", json!({"start": 0, "end": {"seconds": 3}}));
+            let v = level(e);
+            e.undo();
+            run(e, "wave.select", json!({"channels": [1]}));
+            v
+        };
+        let before = probe(&mut e);
+        run(&mut e, "wave.noise_reduction", json!({}));
+        let after = probe(&mut e);
+        assert!((before - after).abs() <= 3.0, "the right channel's signal went from {before} to {after} dB");
+    }
+
+    #[test]
+    fn declip_warns_when_peaks_exceed_full_scale() {
+        let ch: Vec<f32> = (0..SR as usize).map(|i| (1.5 * (std::f32::consts::TAU * 200.0 * i as f32 / SR as f32).sin()).clamp(-1.0, 1.0)).collect();
+        let mut e = opened("restore_declip_peaks", &AudioBuffer { sample_rate: SR, channels: vec![ch] }, BitDepth::Float32).0;
+        e.messages.clear();
+        run(&mut e, "wave.declip", json!({}));
+        let msg = e.messages.last().cloned().unwrap_or_default();
+        assert!(msg.contains("dBFS") && msg.contains("16 or 24 bits"), "{msg:?}");
     }
 }
