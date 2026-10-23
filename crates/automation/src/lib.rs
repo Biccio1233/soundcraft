@@ -29,11 +29,18 @@ pub trait Backend {
 pub struct Headless {
     pub engine: Engine,
     roots: Option<Arc<AutomationRoots>>,
+    product: &'static str,
 }
 
 impl Headless {
     pub fn new(engine: Engine) -> Self {
-        Headless { engine, roots: None }
+        Headless { engine, roots: None, product: "SoundCraft" }
+    }
+
+    /// Name `product` (e.g. "WaveCraft") in messages instead of SoundCraft.
+    pub fn for_product(mut self, product: &'static str) -> Self {
+        self.product = product;
+        self
     }
 
     /// Confine every file the session's commands read and write to `roots`
@@ -59,7 +66,8 @@ impl Headless {
                 Ok(soundcraft_engine::inspect::session(&self.engine, params.get("detail").and_then(Value::as_str) == Some("full")))
             }
             m if m.starts_with("ui.") => {
-                Err(format!("`{m}` needs the desktop app: start `soundcraft --control 0` and use `soundcraft-cli mcp --connect PORT`"))
+                let bin = self.product.to_ascii_lowercase();
+                Err(format!("`{m}` needs the desktop app: start `{bin} --control 0` and use `{bin}-cli mcp --connect PORT`"))
             }
             other => Err(format!("unknown method `{other}`")),
         }
@@ -84,13 +92,20 @@ pub struct Remote {
     addr: String,
     conn: Option<(TcpStream, BufReader<TcpStream>)>,
     next_id: u64,
+    product: &'static str,
 }
 
 impl Remote {
     /// `target` is a port (`7979`) or `host:port`.
     pub fn new(target: &str) -> Self {
         let addr = if target.contains(':') { target.to_string() } else { format!("127.0.0.1:{target}") };
-        Remote { addr, conn: None, next_id: 1 }
+        Remote { addr, conn: None, next_id: 1, product: "SoundCraft" }
+    }
+
+    /// Name `product` (e.g. "WaveCraft") in messages instead of SoundCraft.
+    pub fn for_product(mut self, product: &'static str) -> Self {
+        self.product = product;
+        self
     }
 
     fn connect(&mut self) -> Result<(), String> {
@@ -98,8 +113,8 @@ impl Remote {
             return Ok(());
         }
         let sock = self.addr.parse().map_err(|e| format!("{}: {e}", self.addr))?;
-        let s =
-            TcpStream::connect_timeout(&sock, Duration::from_millis(800)).map_err(|e| format!("cannot reach SoundCraft at {}: {e}", self.addr))?;
+        let s = TcpStream::connect_timeout(&sock, Duration::from_millis(800))
+            .map_err(|e| format!("cannot reach {} at {}: {e}", self.product, self.addr))?;
         s.set_read_timeout(Some(Duration::from_secs(120))).map_err(|e| e.to_string())?;
         let r = s.try_clone().map_err(|e| e.to_string())?;
         self.conn = Some((s, BufReader::new(r)));
@@ -154,7 +169,7 @@ impl Backend for Remote {
         true
     }
     fn describe(&self) -> String {
-        format!("SoundCraft app at {}", self.addr)
+        format!("{} app at {}", self.product, self.addr)
     }
 }
 

@@ -14,8 +14,32 @@ command: call `list_commands` to discover ids and their params, then `execute` (
 or name. Verify your work with `inspect_session` (tracks, clips, mixer, automation, markers, selection). Programmatic \
 calls never open dialogs. Tools marked APP_ONLY need the desktop app (`soundcraft --control 0` + `soundcraft-cli mcp --connect PORT`).";
 
+const WAVECRAFT_INSTRUCTIONS: &str = "WaveCraft is a single-file audio editor (waveform editing, restoration and music analysis). \
+Everything is a command: call `list_commands` to discover ids and their params, then `execute` (or `batch`). Start with \
+`wave.open {path}`; check with `wave.info` and `wave.history`; write with `wave.export {path, bit_depth, dither}`. Edits act on \
+the selection (`wave.select {start, end}`) or on `start`/`end` params. Positions are samples (integers), `{\"seconds\": x}`, or \
+time strings like \"0:12.500\". Programmatic calls never open dialogs. Tools marked APP_ONLY need the desktop app \
+(`wavecraft --control 0` + `wavecraft-cli mcp --connect PORT`).";
+
+/// What a server calls itself: its name, the instructions it gives agents, its resource URI scheme
+/// and the product named in tool descriptions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Profile {
+    pub name: &'static str,
+    pub instructions: &'static str,
+    pub uri_scheme: &'static str,
+    pub product: &'static str,
+}
+
+/// SoundCraft, the multitrack DAW (the default).
+pub const SOUNDCRAFT: Profile = Profile { name: "soundcraft", instructions: INSTRUCTIONS, uri_scheme: "soundcraft", product: "SoundCraft" };
+
+/// WaveCraft, the single-file editor built on the same engine.
+pub const WAVECRAFT: Profile = Profile { name: "wavecraft", instructions: WAVECRAFT_INSTRUCTIONS, uri_scheme: "wavecraft", product: "WaveCraft" };
+
 pub struct Server<B: Backend> {
     pub backend: B,
+    profile: Profile,
 }
 
 fn tool(name: &str, desc: &str, props: Value, required: &[&str]) -> Value {
@@ -115,7 +139,29 @@ fn error_result(e: &str) -> Value {
 
 impl<B: Backend> Server<B> {
     pub fn new(backend: B) -> Self {
-        Server { backend }
+        Self::with_profile(backend, SOUNDCRAFT)
+    }
+
+    /// A server presenting itself as `profile` (same tools and backend).
+    pub fn with_profile(backend: B, profile: Profile) -> Self {
+        Server { backend, profile }
+    }
+
+    fn tools(&self) -> Vec<Value> {
+        let tools = tool_definitions();
+        if self.profile.product == SOUNDCRAFT.product {
+            return tools;
+        }
+        let product = self.profile.product;
+        tools
+            .into_iter()
+            .map(|mut t| {
+                if let Some(d) = t.get("description").and_then(Value::as_str).map(|d| d.replace(SOUNDCRAFT.product, product)) {
+                    t["description"] = json!(d);
+                }
+                t
+            })
+            .collect()
     }
 
     fn exec(&mut self, cmd: &str, params: Value) -> Result<Value, String> {
@@ -209,27 +255,31 @@ impl<B: Backend> Server<B> {
                 Ok(json!({
                     "protocolVersion": ver,
                     "capabilities": {"tools": {}, "resources": {}},
-                    "serverInfo": {"name": "soundcraft", "version": env!("CARGO_PKG_VERSION")},
-                    "instructions": format!("{INSTRUCTIONS}\nBackend: {}.", self.backend.describe()),
+                    "serverInfo": {"name": self.profile.name, "version": env!("CARGO_PKG_VERSION")},
+                    "instructions": format!("{}\nBackend: {}.", self.profile.instructions, self.backend.describe()),
                 }))
             }
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": tool_definitions()})),
+            "tools/list" => Ok(json!({"tools": self.tools()})),
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 Ok(self.call_tool(name, &args))
             }
-            "resources/list" => Ok(json!({"resources": [
-                {"uri": "soundcraft://session", "name": "Session", "mimeType": "application/json", "description": "The open session as JSON"},
-                {"uri": "soundcraft://commands", "name": "Commands", "mimeType": "application/json", "description": "All commands"},
-            ]})),
+            "resources/list" => {
+                let scheme = self.profile.uri_scheme;
+                Ok(json!({"resources": [
+                    {"uri": format!("{scheme}://session"), "name": "Session", "mimeType": "application/json", "description": "The open session as JSON"},
+                    {"uri": format!("{scheme}://commands"), "name": "Commands", "mimeType": "application/json", "description": "All commands"},
+                ]}))
+            }
             "resources/templates/list" => Ok(json!({"resourceTemplates": []})),
             "resources/read" => {
                 let uri = params.get("uri").and_then(Value::as_str).unwrap_or("");
-                let r = match uri {
-                    "soundcraft://session" => self.backend.call("session.inspect", json!({"detail": "full"})),
-                    "soundcraft://commands" => self.backend.call("engine.commands", json!({})),
+                let what = uri.strip_prefix(self.profile.uri_scheme).and_then(|r| r.strip_prefix("://"));
+                let r = match what {
+                    Some("session") => self.backend.call("session.inspect", json!({"detail": "full"})),
+                    Some("commands") => self.backend.call("engine.commands", json!({})),
                     _ => Err(format!("unknown resource {uri}")),
                 };
                 match r {
