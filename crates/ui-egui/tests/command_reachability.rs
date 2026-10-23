@@ -77,8 +77,9 @@ fn every_command_has_a_ui_path() {
     let mut unreached = Vec::new();
     let mut stale = Vec::new();
     for c in command_specs() {
-        // Queries and view-only commands are for agents / the UI's own reads.
-        if !c.journal || c.view {
+        // Queries and view-only commands are for agents / the UI's own reads. WaveCraft's
+        // `wave.*` commands are reached from its own UI (crates/ui-wave), which checks them.
+        if !c.journal || c.view || c.id.starts_with("wave.") {
             continue;
         }
         let reached = in_menus.contains(c.id) || c.shortcut.is_some() || src.contains(&format!("\"{}\"", c.id));

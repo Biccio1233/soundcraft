@@ -1495,6 +1495,50 @@ pub fn live_span(start: Samples, pass: Option<Samples>, punch: Option<Range>, le
     Some((origin, span.intersect(&punch.unwrap_or(span))?))
 }
 
+/// Whether `a` and `b` name the same file (resolving links and relative parts when both exist).
+pub fn same_file(a: &str, b: &str) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// Encode `channels` (planar, already at the target grid if integer) to `path` block by block,
+/// through `<path>.part` renamed only once complete: a failure never leaves a half-written file
+/// or a stray `.part`. Returns the frames written.
+pub fn write_audio_file(path: &str, opts: &EncodeOptions, channels: &[Vec<f32>], sample_rate: u32) -> Result<usize> {
+    use std::io::Write as _;
+    const BLOCK: usize = 1 << 16;
+    crate::file_access::check_write(path).map_err(EngineError::Io)?;
+    let frames = channels.iter().map(Vec::len).min().unwrap_or(0);
+    let part = format!("{path}.part");
+    let io_err = |err: std::io::Error| EngineError::Io(format!("{path}: {err}"));
+    let audio_err = |err: soundcraft_audio_io::AudioError| EngineError::Io(format!("{path}: {err}"));
+    let written = (|| -> Result<()> {
+        let file = std::fs::File::create(&part).map_err(io_err)?;
+        let mut enc =
+            soundcraft_audio_io::FileEncoder::new(std::io::BufWriter::new(file), opts, channels.len(), sample_rate, None).map_err(audio_err)?;
+        enc.check_room(frames as u64).map_err(audio_err)?;
+        let mut done = 0;
+        while done < frames {
+            let n = (frames - done).min(BLOCK);
+            let block: Vec<Vec<f32>> = channels.iter().map(|ch| ch.get(done..done + n).map(<[f32]>::to_vec).unwrap_or_default()).collect();
+            enc.write(&block, n).map_err(audio_err)?;
+            done += n;
+        }
+        enc.finish().map_err(audio_err)?.flush().map_err(io_err)
+    })();
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&part);
+        return Err(err);
+    }
+    std::fs::rename(&part, path).map_err(|err| {
+        let _ = std::fs::remove_file(&part);
+        io_err(err)
+    })?;
+    Ok(frames)
+}
+
 #[cfg(test)]
 mod record_tests {
     use super::*;

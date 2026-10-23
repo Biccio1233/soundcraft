@@ -142,7 +142,7 @@ pub struct Engine {
     /// Label for the undo step of the command now running (see `set_undo_label`).
     pending_label: Option<String>,
     /// The single file WaveCraft has open, when this engine drives WaveCraft (`wave.*` commands).
-    pub wave: Option<()>,
+    pub wave: Option<cmd::wave::WaveFile>,
 }
 
 impl Default for Engine {

@@ -36,6 +36,7 @@ mod video;
 mod view;
 mod view_more;
 mod vst3;
+pub mod wave;
 mod zoom_toggle;
 
 pub use file::bounce_job;
@@ -136,6 +137,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(sampler::specs());
         v.extend(video::specs());
         v.extend(zoom_toggle::specs());
+        v.extend(wave::specs());
         #[cfg(test)]
         v.extend(test_specs());
         v

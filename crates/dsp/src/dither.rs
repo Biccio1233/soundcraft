@@ -38,7 +38,8 @@ impl DitherProfile {
 
 /// Quantize `ch` in place to `bits` (8..=24): every output becomes `k / 2^(bits-1)` with `k` in
 /// `[-2^(bits-1), 2^(bits-1) - 1]`, so an encoder at that depth stores it exactly. Other depths
-/// (32-bit int and float) only clamp to [-1, 1]. NaN becomes 0. The noise is a deterministic
+/// (32-bit int and float) only clamp to [-1, 1]. NaN becomes 0. Samples already on the grid pass
+/// through unchanged (they carry no error to dither). The noise is a deterministic
 /// sequence of `seed`, so the same input always gives the same output.
 pub fn quantize(ch: &mut [f32], bits: u32, profile: DitherProfile, seed: u64) {
     if !(8..=24).contains(&bits) {
@@ -61,6 +62,12 @@ pub fn quantize(ch: &mut [f32], bits: u32, profile: DitherProfile, seed: u64) {
     for x in ch.iter_mut() {
         let v = if x.is_nan() { 0.0 } else { f64::from(*x).clamp(-1.0, 1.0) } * scale;
         let target = v - (taps[0] * err[0] + taps[1] * err[1] + taps[2] * err[2]);
+        if target.fract() == 0.0 {
+            // Already on the grid: no quantization error, so nothing to dither or shape.
+            err = [0.0, err[0], err[1]];
+            *x = (target.clamp(lo, hi) / scale) as f32;
+            continue;
+        }
         let noise = if profile == DitherProfile::None { 0.0 } else { uniform() - uniform() };
         let q = (target + noise).round().clamp(lo, hi);
         // Keep the feedback bounded when the output clips.
@@ -144,6 +151,18 @@ mod tests {
         let mut z = vec![1.5, -2.0, f32::NAN];
         quantize(&mut z, 32, DitherProfile::Tpdf, 0);
         assert_eq!(z, vec![1.0, -1.0, 0.0]);
+    }
+
+    #[test]
+    fn on_grid_input_passes_through() {
+        // Samples already representable at the target depth carry no error to dither: saving an
+        // untouched 16-bit file must give it back bit for bit.
+        let x: Vec<f32> = noise(4096, 11).iter().map(|v| (v * 32_768.0).round() / 32_768.0).collect();
+        for profile in [DitherProfile::None, DitherProfile::Tpdf, DitherProfile::ShapedLight, DitherProfile::ShapedStrong] {
+            let mut y = x.clone();
+            quantize(&mut y, 16, profile, 3);
+            assert_eq!(x, y, "{profile:?}");
+        }
     }
 
     #[test]
