@@ -1,0 +1,25 @@
+[package]
+name = "soundcraft-ui-wave"
+description = "WaveCraft's egui user interface: single-file editor, effects rack, history, spectral view"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.95"
+repository.workspace = true
+
+[dependencies]
+soundcraft-time.workspace = true
+soundcraft-dsp.workspace = true
+soundcraft-model.workspace = true
+soundcraft-engine.workspace = true
+soundcraft-playback.workspace = true
+soundcraft-ui-egui.workspace = true
+egui.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+soundcraft-audio-io.workspace = true
+egui_kittest = { workspace = true, features = ["wgpu"] }
+
+[lints]
+workspace = true

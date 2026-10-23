@@ -3795,6 +3795,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-ui-wave"
+version = "0.12.1"
+dependencies = [
+ "egui",
+ "egui_kittest",
+ "serde_json",
+ "soundcraft-audio-io",
+ "soundcraft-dsp",
+ "soundcraft-engine",
+ "soundcraft-model",
+ "soundcraft-playback",
+ "soundcraft-time",
+ "soundcraft-ui-egui",
+]
+
+[[package]]
 name = "soundcraft-video"
 version = "0.12.1"
 dependencies = [
