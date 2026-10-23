@@ -3,6 +3,7 @@
 //! `engine.execute`, so menus, shortcuts, the CLI, the control channel and MCP do the same thing.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod control;
 mod editor;
 mod files;
 mod history;
@@ -46,6 +47,8 @@ pub struct WaveApp {
     spectral_split: f32,
     /// The spectral texture and the key of the audio and view it shows.
     spectral_cache: Option<(u64, egui::TextureHandle)>,
+    /// The control channel (agents driving the running app).
+    control: control::Control,
 }
 
 impl WaveApp {
@@ -65,6 +68,7 @@ impl WaveApp {
             selection_edit: selection::Edit::default(),
             spectral_split: 0.25,
             spectral_cache: None,
+            control: control::Control::default(),
         }
     }
 
@@ -113,6 +117,7 @@ impl WaveApp {
 
     /// Per-frame work that doesn't draw: theme, the player's copy of the document, transport.
     pub fn logic(&mut self, ctx: &egui::Context) {
+        control::drain(self, ctx);
         if !self.styled {
             soundcraft_ui_egui::fonts::install(ctx);
             soundcraft_ui_egui::theme::apply(ctx, false);

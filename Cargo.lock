@@ -4514,6 +4514,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wavecraft"
+version = "0.12.1"
+dependencies = [
+ "eframe",
+ "egui",
+ "log",
+ "rfd",
+ "serde_json",
+ "soundcraft-engine",
+ "soundcraft-playback",
+ "soundcraft-ui-egui",
+ "soundcraft-ui-wave",
+]
+
+[[package]]
 name = "wavecraft-cli"
 version = "0.12.1"
 dependencies = [
