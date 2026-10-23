@@ -1,13 +1,14 @@
 //! The Editor: an overview of the whole file, a time ruler, the waveform with the selection, and
 //! the transport. Drag to select, click to place the cursor, scroll to move, Cmd+scroll to zoom.
 
-use crate::{WaveApp, clock};
+use crate::{WaveApp, clock, spectral};
 use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
 use soundcraft_model::ClipContent;
 use soundcraft_time::Samples;
 use soundcraft_ui_egui::edit_window::{sample_at, x_of};
 use soundcraft_ui_egui::theme::Tokens;
+use std::hash::{Hash, Hasher};
 
 const OVERVIEW_H: f32 = 18.0;
 const RULER_H: f32 = 20.0;
@@ -107,15 +108,95 @@ fn draw_ruler(painter: &egui::Painter, app: &WaveApp, r: Rect, t: &Tokens) {
     }
 }
 
-fn draw_wave(ui: &egui::Ui, app: &WaveApp, tl: Rect, t: &Tokens) {
-    let painter = ui.painter_at(tl);
+/// The waveform area and, when the spectral view is on, the spectral area under it.
+fn split(app: &WaveApp, tl: Rect) -> (Rect, Option<Rect>) {
+    if !app.engine.wave.as_ref().is_some_and(|w| w.spectral) {
+        return (tl, None);
+    }
+    let y = tl.min.y + tl.height() * app.spectral_split;
+    (Rect::from_min_max(tl.min, pos2(tl.max.x, y)), Some(Rect::from_min_max(pos2(tl.min.x, y + 2.0), tl.max)))
+}
+
+/// A key of everything the spectral texture depends on: the clips, the view, the area.
+fn spectral_key(app: &WaveApp, r: Rect) -> u64 {
+    let s = app.engine.session();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    if let Some(track) = s.tracks.first() {
+        for c in track.clips() {
+            (c.id.0, c.start, c.length, c.gain_db.to_bits(), c.fade_in.len, c.fade_out.len).hash(&mut h);
+            if let ClipContent::Audio { source, offset } = c.content {
+                (source.0, offset).hash(&mut h);
+            }
+        }
+    }
+    (s.edit.zoom.scroll, s.edit.zoom.samples_per_px.to_bits(), r.width().to_bits(), r.height().to_bits(), app.sample_rate()).hash(&mut h);
+    h.finish()
+}
+
+/// Draw the spectral view of the visible audio, one band per channel, recomputed only when its key changes.
+fn draw_spectral(ui: &egui::Ui, app: &mut WaveApp, r: Rect, t: &Tokens) {
+    let painter = ui.painter_at(r);
+    painter.rect_filled(r, 0.0, Color32::from_rgb(8, 4, 20));
+    let key = spectral_key(app, r);
+    if app.spectral_cache.as_ref().is_none_or(|(k, _)| *k != key) {
+        let s = app.engine.session();
+        let channels = app.engine.wave.as_ref().map_or(1, |w| w.channels).max(1);
+        let columns = (r.width().round().max(1.0) as usize).min(2048);
+        let rows = ((r.height() / channels as f32).round().max(8.0) as usize).min(256);
+        let hop = s.edit.zoom.samples_per_px.round().max(1.0) as usize;
+        let start = s.edit.zoom.scroll;
+        let span = (columns * hop + spectral::fft_size()) as Samples;
+        let audio = s.tracks.first().map(|tr| render_audio(s, tr.id, start, span)).unwrap_or_default();
+        let mut pixels = Vec::with_capacity(columns * rows * channels);
+        for ch in audio.iter().take(channels) {
+            match spectral::tile(ch, app.sample_rate(), hop, columns, rows) {
+                Some(tile) => pixels.extend(tile.image().pixels),
+                None => pixels.extend(std::iter::repeat_n(spectral::colour(-144.0), columns * rows)),
+            }
+        }
+        if pixels.len() == columns * rows * channels {
+            let image = egui::ColorImage::new([columns, rows * channels], pixels);
+            let tex = ui.ctx().load_texture("wave_spectral", image, egui::TextureOptions::LINEAR);
+            app.spectral_cache = Some((key, tex));
+        }
+    }
+    if let Some((_, tex)) = &app.spectral_cache {
+        painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+    }
+    let channels = app.engine.wave.as_ref().map_or(1, |w| w.channels).max(1);
+    let band_h = r.height() / channels as f32;
+    for c in 0..channels {
+        let bottom = r.min.y + band_h * (c + 1) as f32;
+        for (hz, label) in [(100.0, "100 Hz"), (1_000.0, "1 kHz"), (10_000.0, "10 kHz")] {
+            let y = bottom - spectral::axis_fraction(hz, app.sample_rate()) * band_h;
+            painter.line_segment([pos2(r.max.x - 8.0, y), pos2(r.max.x, y)], Stroke::new(1.0, t.ruler_tick));
+            painter.text(pos2(r.max.x - 10.0, y), egui::Align2::RIGHT_CENTER, label, egui::FontId::monospace(10.0), t.ruler_text);
+        }
+        if c > 0 {
+            painter.line_segment([pos2(r.min.x, bottom - band_h), pos2(r.max.x, bottom - band_h)], Stroke::new(1.0, t.border));
+        }
+    }
+}
+
+/// The file's samples over `start..start + len` (clips only, no mixer).
+fn render_audio(s: &soundcraft_model::Session, track: soundcraft_model::TrackId, start: Samples, len: Samples) -> Vec<Vec<f32>> {
+    soundcraft_mix::render_clips(s, track, soundcraft_time::Range::new(start, start.saturating_add(len)))
+}
+
+fn draw_wave(ui: &egui::Ui, app: &mut WaveApp, full: Rect, t: &Tokens) {
+    let (tl, spec) = split(app, full);
+    if let Some(r) = spec {
+        draw_spectral(ui, app, r, t);
+    }
+    let painter = ui.painter_at(full);
     let s = app.engine.session();
     let channels = app.engine.wave.as_ref().map_or(1, |w| w.channels);
     let sel = app.selection();
     if !sel.is_empty() {
-        let (x0, x1) = (x_of(s, tl, sel.start), x_of(s, tl, sel.end));
-        painter.rect_filled(Rect::from_min_max(pos2(x0, tl.min.y), pos2(x1, tl.max.y)), 0.0, t.selection);
+        let (x0, x1) = (x_of(s, full, sel.start), x_of(s, full, sel.end));
+        painter.rect_filled(Rect::from_min_max(pos2(x0, full.min.y), pos2(x1, full.max.y)), 0.0, t.selection);
     }
+    let painter = ui.painter_at(tl);
     let h = tl.height() / channels.max(1) as f32;
     for c in 1..channels {
         let y = tl.min.y + h * c as f32;
@@ -135,8 +216,8 @@ fn draw_wave(ui: &egui::Ui, app: &WaveApp, tl: Rect, t: &Tokens) {
         Some(p) => (p.position(), t.playhead),
         None => (sel.start, t.insertion),
     };
-    let x = x_of(s, tl, at);
-    painter.line_segment([pos2(x, tl.min.y), pos2(x, tl.max.y)], Stroke::new(1.0, color));
+    let x = x_of(s, full, at);
+    ui.painter_at(full).line_segment([pos2(x, full.min.y), pos2(x, full.max.y)], Stroke::new(1.0, color));
 }
 
 fn interact(ui: &mut egui::Ui, app: &mut WaveApp, overview: Rect, tl: Rect, len: Samples) {
@@ -155,6 +236,16 @@ fn interact(ui: &mut egui::Ui, app: &mut WaveApp, overview: Rect, tl: Rect, len:
     }
     if r.drag_stopped() {
         app.drag_anchor = None;
+    }
+    // The splitter between waveform and spectral view (added after the timeline, so it wins).
+    if let (_, Some(spec)) = split(app, tl) {
+        let handle = Rect::from_min_max(pos2(tl.min.x, spec.min.y - 5.0), pos2(tl.max.x, spec.min.y + 3.0));
+        let h = ui.interact(handle, ui.id().with("wave_splitter"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeVertical);
+        if h.dragged()
+            && let Some(p) = h.interact_pointer_pos()
+        {
+            app.spectral_split = ((p.y - tl.min.y) / tl.height().max(1.0)).clamp(0.1, 0.85);
+        }
     }
     if r.clicked()
         && let Some(p) = r.interact_pointer_pos()

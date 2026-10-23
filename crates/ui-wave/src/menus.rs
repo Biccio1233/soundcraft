@@ -62,6 +62,7 @@ pub const WAVE_MENUS: &[MenuItem] = &[
     item(&["Effects"], "Apply Rack", "wave.rack_apply", "", None),
     file(&["Effects"], "Load Rack Preset…", "wave.rack_preset_load", None, Dialog::LoadPreset),
     file(&["Effects"], "Save Rack Preset…", "wave.rack_preset_save", None, Dialog::SavePreset),
+    item(&["View"], "Spectral Display", "wave.view_spectral", "", Some("Cmd+Shift+D")),
 ];
 
 /// The top-level menu names, in order.

@@ -32,6 +32,8 @@ pub struct WaveFile {
     pub history_budget_mb: u32,
     /// How many of the oldest steps the budget has dropped since the file was opened.
     pub history_dropped: usize,
+    /// Show the spectral view under the waveform (a view setting: not part of the file).
+    pub spectral: bool,
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -91,6 +93,7 @@ pub fn specs() -> Vec<CommandSpec> {
             has_file,
             history_budget
         ),
+        cmd!(view "wave.view_spectral", "Spectral Display", [], None, "{on?: bool} — show or hide the spectral view (toggles without `on`)", has_file, view_spectral),
         cmd!(
             noundo "wave.save",
             "Save",
@@ -198,6 +201,7 @@ fn open(e: &mut Engine, p: &Value) -> Result<Value> {
         channels_enabled: vec![true; channels],
         history_budget_mb: DEFAULT_HISTORY_BUDGET_MB,
         history_dropped: 0,
+        spectral: false,
     });
     info_json(e)
 }
@@ -356,6 +360,14 @@ fn history_budget(e: &mut Engine, p: &Value) -> Result<Value> {
     }
     enforce_history_budget(e)?;
     history_json(e)
+}
+
+fn view_spectral(e: &mut Engine, p: &Value) -> Result<Value> {
+    wave(e)?;
+    let on = p.get("on").and_then(Value::as_bool);
+    let w = e.wave.as_mut().ok_or_else(|| EngineError::NotFound("no file open".into()))?;
+    w.spectral = on.unwrap_or(!w.spectral);
+    Ok(json!({"spectral": w.spectral}))
 }
 
 fn depth_param(cmd: &str, p: &Value) -> Result<Option<BitDepth>> {
@@ -719,6 +731,18 @@ pub(crate) mod tests {
         assert!(h["bytes"].as_u64().unwrap() <= (64 << 20) + 23_040_000, "{h}");
         e.execute("wave.history_jump", &json!({"index": 0})).unwrap();
         assert_eq!(rows(&mut e)[0].1, "current");
+    }
+
+    #[test]
+    fn spectral_toggle_is_a_view_command() {
+        let (mut e, _) = opened("spectral_toggle", &noise(48_000, 1, 4_800), BitDepth::Int16);
+        let n = e.undo_history().len();
+        e.execute("wave.view_spectral", &json!({})).unwrap();
+        assert_eq!(e.wave.as_ref().map(|w| w.spectral), Some(true));
+        e.execute("wave.view_spectral", &json!({"on": false})).unwrap();
+        assert_eq!(e.wave.as_ref().map(|w| w.spectral), Some(false));
+        assert!(!e.is_dirty());
+        assert_eq!(e.undo_history().len(), n);
     }
 
     #[test]

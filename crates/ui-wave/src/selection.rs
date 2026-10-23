@@ -24,7 +24,7 @@ pub fn show(ui: &mut egui::Ui, app: &mut WaveApp) {
         ui.end_row();
         ui.label("Selection");
         for (text, value) in [(&mut app.selection_edit.start, sel.start), (&mut app.selection_edit.end, sel.end)] {
-            let r = ui.add(egui::TextEdit::singleline(text).desired_width(96.0));
+            let r = ui.add_sized([92.0, 20.0], egui::TextEdit::singleline(text));
             if !r.has_focus() && !r.lost_focus() {
                 *text = clock(value, sr);
             }

@@ -10,6 +10,7 @@ mod levels;
 pub mod menus;
 mod rack;
 mod selection;
+mod spectral;
 
 use egui::Rect;
 use serde_json::{Value, json};
@@ -41,6 +42,10 @@ pub struct WaveApp {
     add_effect: String,
     /// Text being edited in the Selection/View fields.
     selection_edit: selection::Edit,
+    /// The waveform's share of the editor height when the spectral view is shown.
+    spectral_split: f32,
+    /// The spectral texture and the key of the audio and view it shows.
+    spectral_cache: Option<(u64, egui::TextureHandle)>,
 }
 
 impl WaveApp {
@@ -58,6 +63,8 @@ impl WaveApp {
             status: String::new(),
             add_effect: "gain".into(),
             selection_edit: selection::Edit::default(),
+            spectral_split: 0.25,
+            spectral_cache: None,
         }
     }
 

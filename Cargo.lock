@@ -3804,6 +3804,7 @@ dependencies = [
  "soundcraft-audio-io",
  "soundcraft-dsp",
  "soundcraft-engine",
+ "soundcraft-mix",
  "soundcraft-model",
  "soundcraft-playback",
  "soundcraft-time",
