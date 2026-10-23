@@ -14,6 +14,9 @@ pub enum Dialog {
     LoadPreset,
     SavePrint,
     LoadPrint,
+    /// The dialog of a restoration effect (the built-in plugin's id).
+    Effect(&'static str),
+    Stats,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -35,6 +38,16 @@ const fn item(
     shortcut: Option<&'static str>,
 ) -> MenuItem {
     MenuItem { path, label, command, params, shortcut, dialog: Dialog::None }
+}
+
+const fn effect(
+    path: &'static [&'static str],
+    label: &'static str,
+    command: &'static str,
+    plugin: &'static str,
+    shortcut: Option<&'static str>,
+) -> MenuItem {
+    MenuItem { path, label, command, params: "", shortcut, dialog: Dialog::Effect(plugin) }
 }
 
 const fn file(path: &'static [&'static str], label: &'static str, command: &'static str, shortcut: Option<&'static str>, dialog: Dialog) -> MenuItem {
@@ -65,16 +78,17 @@ pub const WAVE_MENUS: &[MenuItem] = &[
     file(&["Effects"], "Load Rack Preset…", "wave.rack_preset_load", None, Dialog::LoadPreset),
     file(&["Effects"], "Save Rack Preset…", "wave.rack_preset_save", None, Dialog::SavePreset),
     item(RESTORE, "Capture Noise Print", "wave.noise_print_capture", "", Some("Shift+P")),
-    item(RESTORE, "Noise Reduction", "wave.noise_reduction", "", Some("Cmd+Shift+P")),
-    item(RESTORE, "Adaptive Denoise", "wave.adaptive_noise_reduction", "", None),
-    item(RESTORE, "Hum Removal", "wave.dehum", "", None),
-    item(RESTORE, "Hiss Reduction", "wave.hiss_reduction", "", None),
-    item(RESTORE, "Clip Repair", "wave.declip", "", None),
-    item(RESTORE, "Reverb Reduction", "wave.dereverb", "", None),
+    effect(RESTORE, "Noise Reduction…", "wave.noise_reduction", "noise_reduction", Some("Cmd+Shift+P")),
+    effect(RESTORE, "Adaptive Denoise…", "wave.adaptive_noise_reduction", "adaptive_noise_reduction", None),
+    effect(RESTORE, "Hum Removal…", "wave.dehum", "dehum", None),
+    effect(RESTORE, "Hiss Reduction…", "wave.hiss_reduction", "hiss_reduction", None),
+    effect(RESTORE, "Clip Repair…", "wave.declip", "declip", None),
+    effect(RESTORE, "Reverb Reduction…", "wave.dereverb", "dereverb", None),
     file(RESTORE, "Save Noise Print…", "wave.noise_print_save", None, Dialog::SavePrint),
     file(RESTORE, "Load Noise Print…", "wave.noise_print_load", None, Dialog::LoadPrint),
     item(RESTORE, "Clear Noise Print", "wave.noise_print_clear", "", None),
     item(&["View"], "Spectral Display", "wave.view_spectral", "", Some("Cmd+Shift+D")),
+    file(&["Window"], "Amplitude Statistics…", "wave.stats", None, Dialog::Stats),
 ];
 
 /// The restoration submenu of Effects.
@@ -99,15 +113,19 @@ pub fn bar(ui: &mut egui::Ui, app: &mut WaveApp) {
     ui.horizontal(|ui| {
         for root in roots() {
             ui.menu_button(root, |ui| {
+                let mut subs: Vec<&'static str> = Vec::new();
                 for m in WAVE_MENUS.iter().filter(|m| m.path.first() == Some(&root)) {
-                    let enabled = soundcraft_engine::find_command(m.command).is_some_and(|s| s.info(&app.engine).enabled);
-                    let mut button = egui::Button::new(m.label);
-                    if let Some(sc) = m.shortcut {
-                        button = button.shortcut_text(sc);
-                    }
-                    if ui.add_enabled(enabled, button).clicked() {
-                        clicked = Some(m);
-                        ui.close();
+                    match m.path.get(1) {
+                        None => entry(ui, app, m, &mut clicked),
+                        Some(sub) if !subs.contains(sub) => {
+                            subs.push(sub);
+                            ui.menu_button(*sub, |ui| {
+                                for s in WAVE_MENUS.iter().filter(|s| s.path.first() == Some(&root) && s.path.get(1) == Some(sub)) {
+                                    entry(ui, app, s, &mut clicked);
+                                }
+                            });
+                        }
+                        Some(_) => {}
                     }
                 }
             });
@@ -115,6 +133,19 @@ pub fn bar(ui: &mut egui::Ui, app: &mut WaveApp) {
     });
     if let Some(m) = clicked {
         invoke(app, m);
+    }
+}
+
+/// One menu entry (enabled when its command is).
+fn entry(ui: &mut egui::Ui, app: &WaveApp, m: &'static MenuItem, clicked: &mut Option<&'static MenuItem>) {
+    let enabled = soundcraft_engine::find_command(m.command).is_some_and(|s| s.info(&app.engine).enabled);
+    let mut button = egui::Button::new(m.label);
+    if let Some(sc) = m.shortcut {
+        button = button.shortcut_text(sc);
+    }
+    if ui.add_enabled(enabled, button).clicked() {
+        *clicked = Some(m);
+        ui.close();
     }
 }
 
@@ -142,6 +173,8 @@ pub fn invoke(app: &mut WaveApp, m: &MenuItem) {
                 app.run(m.command, json!({"path": path}));
             }
         }
+        Dialog::Effect(plugin) => app.open_effect(plugin, m.command),
+        Dialog::Stats => app.open_stats(),
         Dialog::LoadPrint => {
             if let Some(path) = app.services.pick_open.as_ref().and_then(|pick| pick("Load noise print", &["json"])) {
                 app.run(m.command, json!({"path": path}));

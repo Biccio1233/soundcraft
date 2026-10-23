@@ -10,6 +10,7 @@ mod history;
 mod levels;
 pub mod menus;
 mod rack;
+pub mod restore;
 mod selection;
 mod spectral;
 
@@ -55,6 +56,10 @@ pub struct WaveApp {
     confirm: Option<Box<dyn Fn(&str) -> bool>>,
     /// The export waiting for its options (path chosen, depth and dither still to pick).
     export: Option<Export>,
+    /// The open restoration dialog.
+    effect: Option<restore::EffectDialog>,
+    /// The Amplitude Statistics window's last measurement (`Null`: nothing to measure).
+    stats: Option<Value>,
 }
 
 /// An export whose path is chosen: the options window picks depth and dither.
@@ -90,6 +95,8 @@ impl WaveApp {
             spectral_renders: 0,
             confirm: None,
             export: None,
+            effect: None,
+            stats: None,
         }
     }
 
@@ -334,6 +341,8 @@ impl WaveApp {
         egui::CentralPanel::default().show(ui, |ui| editor::show(ui, self));
         let ctx = ui.ctx().clone();
         self.export_window(&ctx);
+        restore::effect_window(&ctx, self);
+        restore::stats_window(&ctx, self);
     }
 
     /// Keyboard shortcuts from the menus, plus Space for play/stop.

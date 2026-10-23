@@ -3,7 +3,8 @@
 //! `cargo run -p soundcraft-ui-wave --example wave_shot -- out.png [audio-file] [script.jsonl] [--size WxH]`
 //!
 //! Script lines are `{"command": "wave.gain", "params": {...}}` (run on the engine),
-//! `{"shot": "path.png"}` or `{"steps": n}`.
+//! `{"menu": "Noise Reduction…"}` (invoke the menu item with that label), `{"shot": "path.png"}` or
+//! `{"steps": n}`.
 
 use serde_json::Value;
 use soundcraft_ui_egui::Services;
@@ -57,6 +58,12 @@ fn main() {
                 let p = v.get("params").cloned().unwrap_or(Value::Null);
                 if let Err(e) = harness.state_mut().engine.execute(cmd, &p) {
                     eprintln!("{cmd}: {e}");
+                }
+                harness.run();
+            } else if let Some(label) = v.get("menu").and_then(Value::as_str) {
+                match soundcraft_ui_wave::menus::WAVE_MENUS.iter().find(|m| m.label == label) {
+                    Some(item) => soundcraft_ui_wave::menus::invoke(harness.state_mut(), item),
+                    None => eprintln!("no menu item `{label}`"),
                 }
                 harness.run();
             } else if let Some(path) = v.get("shot").and_then(Value::as_str) {

@@ -213,3 +213,59 @@ fn channel_toggles_set_the_enabled_channels() {
     h.run();
     assert_eq!(exec(&mut h, "wave.info", json!({}))["channels_enabled"], json!([true, false]));
 }
+
+#[test]
+fn effect_items_name_existing_plugins() {
+    use soundcraft_ui_wave::menus::Dialog;
+    let mut n = 0;
+    for item in WAVE_MENUS {
+        if let Dialog::Effect(plugin) = item.dialog {
+            assert!(soundcraft_dsp::plugin_info(plugin).is_some(), "{} → {plugin}", item.label);
+            n += 1;
+        }
+    }
+    assert_eq!(n, 6);
+}
+
+#[test]
+fn effect_dialog_process_adds_one_history_row() {
+    let mut h = harness(opened("effect_dialog"));
+    let n0 = exec(&mut h, "wave.history", json!({}))["rows"].as_array().unwrap().len();
+    h.state_mut().open_effect("dehum", "wave.dehum");
+    h.run();
+    h.get_by_label("Process").click();
+    h.run();
+    let rows = exec(&mut h, "wave.history", json!({}))["rows"].as_array().cloned().unwrap();
+    assert_eq!(rows.len(), n0 + 1);
+    assert!(h.state().engine.undo_label().unwrap_or_default().starts_with("Hum Removal"), "{:?}", h.state().engine.undo_label());
+}
+
+#[test]
+fn noise_reduction_dialog_captures_the_print() {
+    let mut e = opened("nr_dialog");
+    e.execute("wave.select", &json!({"start": 0, "end": 24_000})).unwrap();
+    let mut h = harness(e);
+    h.state_mut().open_effect("noise_reduction", "wave.noise_reduction");
+    h.run();
+    h.get_by_label("Capture Noise Print").click();
+    h.run();
+    assert_eq!(exec(&mut h, "wave.noise_print_info", json!({}))["captured"], json!(true));
+}
+
+#[test]
+fn rack_hides_band_params() {
+    let mut e = opened("rack_bands");
+    e.execute("wave.noise_print_capture", &json!({"start": 0, "end": 24_000})).unwrap();
+    e.execute("wave.rack_add", &json!({"plugin": "noise_reduction"})).unwrap();
+    let h = harness(e);
+    assert!(h.query_by_label("nb00").is_none());
+    assert!(h.query_by_label_contains("Noise print").is_some());
+}
+
+#[test]
+fn amplitude_statistics_window_shows_rms() {
+    let mut h = harness(opened("stats_window"));
+    h.state_mut().open_stats();
+    h.run();
+    assert!(h.query_by_label_contains("RMS").is_some());
+}
