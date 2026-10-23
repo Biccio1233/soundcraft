@@ -100,11 +100,7 @@ pub fn prune_pool(s: &mut Session) {
 fn finish_edit(e: &mut Engine, label: String) -> Result<Value> {
     prune_pool(e.session_mut());
     e.set_undo_label(label);
-    let budget = u64::from(wave(e)?.history_budget_mb).saturating_mul(1 << 20);
-    let dropped = e.trim_history_to_bytes(budget);
-    if dropped > 0 {
-        e.messages.push(format!("History trimmed to its {} MB budget: dropped the {dropped} oldest steps", budget >> 20));
-    }
+    super::wave::enforce_history_budget(e)?;
     info(e)
 }
 

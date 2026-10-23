@@ -30,6 +30,8 @@ pub struct WaveFile {
     pub channels_enabled: Vec<bool>,
     /// The audio the history may keep before its oldest steps are dropped.
     pub history_budget_mb: u32,
+    /// How many of the oldest steps the budget has dropped since the file was opened.
+    pub history_dropped: usize,
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -69,6 +71,25 @@ pub fn specs() -> Vec<CommandSpec> {
             "{path, format?: wav|aiff|flac (default from the extension), bit_depth?: 16|24|32|\"32f\" (default 24), dither?: none|tpdf|shaped_light|shaped_strong (default tpdf at 16 bits, none above)} — write the file as it is now; the rack is not included until applied",
             has_file,
             export
+        ),
+        cmd!(
+            query "wave.history",
+            "History",
+            [],
+            None,
+            "{} — the history rows (row 0 is the opened file; `index` is what wave.history_jump takes; state done|current|undone), the budget and the audio it holds",
+            has_file,
+            history
+        ),
+        cmd!(noundo "wave.history_jump", "Go to History Step", [], None, "{index} — go to that history row (undoing or redoing the steps in between)", has_file, history_jump),
+        cmd!(
+            noundo "wave.history_budget",
+            "History Memory",
+            [],
+            None,
+            "{mb: 64..65536} — the audio the history may keep (default 2048 MB); older steps beyond it are dropped",
+            has_file,
+            history_budget
         ),
         cmd!(
             noundo "wave.save",
@@ -176,6 +197,7 @@ fn open(e: &mut Engine, p: &Value) -> Result<Value> {
         sample_rate: info.sample_rate,
         channels_enabled: vec![true; channels],
         history_budget_mb: DEFAULT_HISTORY_BUDGET_MB,
+        history_dropped: 0,
     });
     info_json(e)
 }
@@ -267,6 +289,73 @@ fn select(e: &mut Engine, p: &Value) -> Result<Value> {
         w.channels_enabled = mask;
     }
     info_json(e)
+}
+
+/// Keep the history inside the file's budget, counting and reporting dropped steps.
+pub fn enforce_history_budget(e: &mut Engine) -> Result<usize> {
+    let budget = u64::from(wave(e)?.history_budget_mb).saturating_mul(1 << 20);
+    let dropped = e.trim_history_to_bytes(budget);
+    if dropped > 0 {
+        if let Some(w) = e.wave.as_mut() {
+            w.history_dropped = w.history_dropped.saturating_add(dropped);
+        }
+        e.messages.push(format!("History trimmed to its {} MB budget: dropped the {dropped} oldest steps", budget >> 20));
+    }
+    Ok(dropped)
+}
+
+fn history_json(e: &Engine) -> Result<Value> {
+    let w = wave(e)?;
+    let undo = e.undo_history();
+    let current = undo.len();
+    let first = if w.history_dropped == 0 { "Open".to_string() } else { format!("Open (+{} steps dropped)", w.history_dropped) };
+    let labels = std::iter::once(first).chain(undo).chain(e.redo_history());
+    let rows: Vec<Value> = labels
+        .enumerate()
+        .map(|(i, label)| {
+            let state = match i.cmp(&current) {
+                std::cmp::Ordering::Less => "done",
+                std::cmp::Ordering::Equal => "current",
+                std::cmp::Ordering::Greater => "undone",
+            };
+            json!({"index": i, "label": label, "state": state})
+        })
+        .collect();
+    Ok(json!({"rows": rows, "budget_mb": w.history_budget_mb, "bytes": e.history_bytes(), "dropped": w.history_dropped}))
+}
+
+fn history(e: &mut Engine, _: &Value) -> Result<Value> {
+    history_json(e)
+}
+
+fn history_jump(e: &mut Engine, p: &Value) -> Result<Value> {
+    const ID: &str = "wave.history_jump";
+    wave(e)?;
+    let last = e.undo_history().len().saturating_add(e.redo_history().len());
+    let index = p
+        .get("index")
+        .and_then(Value::as_u64)
+        .and_then(|i| usize::try_from(i).ok())
+        .filter(|i| *i <= last)
+        .ok_or_else(|| bad(ID, format!("`index` must be a history row, 0..={last}")))?;
+    e.history_jump(index);
+    history_json(e)
+}
+
+fn history_budget(e: &mut Engine, p: &Value) -> Result<Value> {
+    const ID: &str = "wave.history_budget";
+    wave(e)?;
+    let mb = p
+        .get("mb")
+        .and_then(Value::as_u64)
+        .and_then(|m| u32::try_from(m).ok())
+        .filter(|m| (64..=65_536).contains(m))
+        .ok_or_else(|| bad(ID, "`mb` must be between 64 and 65536"))?;
+    if let Some(w) = e.wave.as_mut() {
+        w.history_budget_mb = mb;
+    }
+    enforce_history_budget(e)?;
+    history_json(e)
 }
 
 fn depth_param(cmd: &str, p: &Value) -> Result<Option<BitDepth>> {
@@ -560,6 +649,76 @@ pub(crate) mod tests {
         assert!(e.execute("wave.select", &json!({"channels": [2]})).is_err());
         assert!(!e.is_dirty());
         assert!(e.undo_history().is_empty());
+    }
+
+    fn rows(e: &mut Engine) -> Vec<(String, String)> {
+        let h = e.execute("wave.history", &json!({})).unwrap();
+        h["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                assert_eq!(r["index"].as_u64(), Some(i as u64));
+                (r["label"].as_str().unwrap().to_string(), r["state"].as_str().unwrap().to_string())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn history_rows_mark_current_and_undone() {
+        let (mut e, _) = opened("history_rows", &noise(48_000, 1, 48_000), BitDepth::Float32);
+        for db in [1.0, 2.0, 3.0] {
+            e.execute("wave.gain", &json!({"db": db})).unwrap();
+        }
+        e.undo();
+        let r = rows(&mut e);
+        let labels: Vec<&str> = r.iter().map(|(l, _)| l.as_str()).collect();
+        let states: Vec<&str> = r.iter().map(|(_, s)| s.as_str()).collect();
+        assert_eq!(labels.len(), 4);
+        assert_eq!(labels[0], "Open");
+        assert!(labels[1].starts_with("Gain +1.0 dB") && labels[3].starts_with("Gain +3.0 dB"), "{labels:?}");
+        assert_eq!(states, ["done", "done", "current", "undone"]);
+    }
+
+    #[test]
+    fn jump_to_open_restores_the_file() {
+        let (mut e, _) = opened("history_jump", &noise(48_000, 1, 48_000), BitDepth::Float32);
+        let orig = render_file(&e).unwrap();
+        for db in [1.0, 2.0, 3.0] {
+            e.execute("wave.gain", &json!({"db": db})).unwrap();
+        }
+        let edited = render_file(&e).unwrap();
+        e.execute("wave.history_jump", &json!({"index": 0})).unwrap();
+        assert_eq!(render_file(&e).unwrap(), orig);
+        assert_eq!(rows(&mut e)[0].1, "current");
+        e.execute("wave.history_jump", &json!({"index": 3})).unwrap();
+        assert_eq!(render_file(&e).unwrap(), edited);
+    }
+
+    #[test]
+    fn jump_out_of_range_and_after_trim() {
+        let (mut e, _) = opened("history_trim", &noise(48_000, 2, 48_000 * 60), BitDepth::Float32);
+        e.execute("wave.gain", &json!({"db": 1.0})).unwrap();
+        let before = render_file(&e).unwrap();
+        assert!(e.execute("wave.history_jump", &json!({"index": 99})).is_err());
+        assert!(e.execute("wave.history_jump", &json!({})).is_err());
+        assert_eq!(render_file(&e).unwrap(), before);
+        assert!(e.execute("wave.history_budget", &json!({"mb": 8})).is_err());
+        e.execute("wave.history_budget", &json!({"mb": 64})).unwrap();
+        for db in [1.0, 1.0, 1.0, 1.0] {
+            e.execute("wave.gain", &json!({"db": db})).unwrap();
+        }
+        let r = rows(&mut e);
+        assert!(r.len() < 6, "{r:?}");
+        assert!(r[0].0.starts_with("Open (+"), "{r:?}");
+        assert!(e.messages.iter().any(|m| m.contains("History trimmed")), "{:?}", e.messages);
+        let h = e.execute("wave.history", &json!({})).unwrap();
+        // The budget is enforced before the running step is pushed, so it may be exceeded by one
+        // step: here one full-file source of 1 min stereo float (23 040 000 bytes).
+        assert!(h["bytes"].as_u64().unwrap() <= (64 << 20) + 23_040_000, "{h}");
+        e.execute("wave.history_jump", &json!({"index": 0})).unwrap();
+        assert_eq!(rows(&mut e)[0].1, "current");
     }
 
     #[test]
