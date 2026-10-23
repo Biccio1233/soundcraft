@@ -143,6 +143,8 @@ pub struct Engine {
     pending_label: Option<String>,
     /// The single file WaveCraft has open, when this engine drives WaveCraft (`wave.*` commands).
     pub wave: Option<cmd::wave::WaveFile>,
+    /// WaveCraft's clipboard (audio, not clips: it survives opening another file).
+    pub wave_clipboard: Option<cmd::wave_edit::WaveClip>,
 }
 
 impl Default for Engine {
@@ -175,6 +177,7 @@ impl Engine {
             last_selection: None,
             pending_label: None,
             wave: None,
+            wave_clipboard: None,
         }
     }
 
