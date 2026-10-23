@@ -1,0 +1,13 @@
+# Tests skipped by scripts/wavecraft-ci-macos.sh on macOS development machines.
+#
+# These tests scan the real system plug-in folders (~/Library and /Library/Audio/Plug-Ins/VST3).
+# On a machine with third-party VST3 plug-ins installed, a plug-in that throws a C++ exception
+# while being loaded aborts the whole test process ("Rust cannot catch foreign exceptions").
+# Measured on 2026-10-23 with iZotope RX 11 installed: with these six skipped, 1155 tests pass.
+# They still run in the Linux Docker gate (`docker compose run --rm ci`), which has no plug-ins.
+cmd::instrument::tests::refuses_effects_unknown_plugins_and_other_track_kinds
+cmd::tests::every_command_survives_empty_params
+cmd::vst3::tests::unknown_vst3_insert_is_an_error
+cmd::vst3::tests::vst3_plugins_query_returns_a_list
+tests::stored_state_comes_first_then_session_params
+tests::garbage_files_are_errors_not_crashes

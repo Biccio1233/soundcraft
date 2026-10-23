@@ -1,0 +1,24 @@
+# `docker compose run --rm ci` runs the full `cargo xtask ci` gate on Linux.
+# `docker compose run --rm cli <args>` runs the headless `wavecraft-cli`.
+services:
+  ci:
+    build: .
+    command: cargo xtask ci
+    environment:
+      # Docker Desktop's VM has ~8 GB: linking the egui test binaries 14 at a time gets the linker
+      # killed (signal 9). Fewer jobs and line tables only keep it inside the VM's memory.
+      CARGO_BUILD_JOBS: "4"
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    volumes: &volumes
+      - .:/src
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-linux:/target
+  cli:
+    build: .
+    entrypoint: ["cargo", "run", "-q", "--release", "-p", "wavecraft-cli", "--"]
+    volumes: *volumes
+volumes:
+  cargo-registry:
+  cargo-git:
+  target-linux:
