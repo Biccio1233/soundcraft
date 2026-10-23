@@ -153,12 +153,25 @@ The behaviour reference is an incumbent waveform editor for editing and restorat
   - Noise prints save and load as JSON files and travel inside rack presets as those band values.
 - **`wave-ml` unsafe.** There is no FFI list in `xtask`: unsafe is allowed per crate by its own lints, as in `clap-host`/`vst3-host`/`au-host`. `wave-ml` gets a `LAYERS` entry (L1) and `unsafe_code = "deny"` with a single FFI module.
 - **Deferred to the owner at the start of the phase they belong to** (the stop points of the spec):
-  - **F1**: the measurement method for the real-take test (band filter for "3 kHz", RMS window, exact pause and music spans), proposed by calibrating against the incumbent's output in `11. AirCraft/SoundCraft/reclusa-nuova1/`, plus whether defaults must already hit the target.
+  - **F1**: settled at the start of F1, see below.
   - **F2**:
     - the first Whisper model to download;
     - the provenance of the ONNX models (HTDemucs has no official ONNX: a one-off export by us at development time, hosted where the owner decides, or a third-party export);
     - free transcription vs alignment of lyrics the owner supplies (recommendation: both, with supplied text preferred for ChordPro);
     - real-time tempo/transpose vs a rendered preview (recommendation: rendered preview, no change to the shared player).
+
+## Settled at the start of F1 *(calls: the owner said «vai con F1»)*
+
+- **Real-take measurement method**, calibrated on the files in `11. AirCraft/SoundCraft/reclusa-nuova1/`; it reproduces the figures recorded on 22/10 within 0.1 dB.
+  - *Pause*: RMS of both channels over 211.4–212.1 s, the exact span of `rumore-pausa-3m31.wav` (found by matching its samples in the source).
+  - *3 kHz*: RMS of both channels over 30–90 s after an RBJ band-pass at 3000 Hz, Q 0.5, constant 0 dB peak gain (ffmpeg's `bandpass=f=3000` defaults).
+  - Reference values (pause / 3 kHz): source −45.0 / −41.5 dB; incumbent −74.7 / −43.3 dB; ffmpeg v2 −50.8 / −42.1 dB.
+  - Pass: pause ≤ −70.0 dB, and 3 kHz ≥ the source's 3 kHz − 1.0 dB.
+  - WaveCraft measures it itself with a new `wave.stats {start?, end?, filter?, hz?, q?}` (peak and RMS, optional band filter: Audition's Amplitude Statistics family). The method is cross-checked once against ffmpeg.
+- **Defaults hit the target.** The real test captures the print on the pause, then runs `wave.noise_reduction` with default parameters on the whole file. If the defaults cannot meet both limits, the shortfall is reported, not hidden behind a tuned preset.
+- **Noise-reduction gain**: Ephraim–Malah 1985 log-spectral amplitude (MMSE-LSA) with decision-directed a-priori SNR. This is the 1985 paper's estimator; the 1984 STSA one needs Bessel functions and leaves more musical noise.
+- **Our own plugin names**: Noise Reduction, Adaptive Denoise, Hum Removal, Hiss Reduction, Clip Repair, Reverb Reduction. The `wave.*` command ids follow the owner's spec.
+- **Preview** is the rack. Each restoration dialog has *Add to Rack* (the rack plays live) next to *Apply*; there is no separate preview engine.
 
 ## Limits
 
@@ -170,3 +183,4 @@ The behaviour reference is an incumbent waveform editor for editing and restorat
 | Date | Change | Summary |
 |---|---|---|
 | 2026-10-23 | major | First design: scope from the owner's spec + extended F2, decisions of the spec review, architecture grounded in the code |
+| 2026-10-23 | minor | F1 opened: real-take measurement method calibrated on the incumbent's output, defaults must hit the target, `wave.stats`, LSA gain, our plugin names, preview through the rack |
