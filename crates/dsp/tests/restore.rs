@@ -262,3 +262,68 @@ fn nr_without_print_passes_through() {
     let worst = x.iter().zip(&y).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
     assert!(worst < 1e-4, "worst {worst}");
 }
+
+// ---- adaptive noise reduction ---------------------------------------------------------------------
+
+use soundcraft_dsp::restore::MinTracker;
+
+/// 1 s of noise at −70 dBFS, then 440 Hz bursts at −20 dBFS (250 ms on, 250 ms off, 5 ms ramps)
+/// over the same noise: an adaptive tracker must see the gaps to tell the tone from the noise.
+fn bursts() -> Vec<f32> {
+    let n = (SR * 4.0) as usize;
+    let mut x = noise(1, n, 10f32.powf(-70.0 / 20.0), 23).remove(0);
+    let tone = sine(440.0, -20.0, n);
+    let ramp = (0.005 * SR) as usize;
+    let half = (0.25 * SR) as usize;
+    for (i, v) in x.iter_mut().enumerate().skip(SR as usize) {
+        let t = (i - SR as usize) % (2 * half);
+        if t < half {
+            let edge = t.min(half - 1 - t);
+            let env = if edge < ramp { 0.5 - 0.5 * (std::f32::consts::PI * edge as f32 / ramp as f32).cos() } else { 1.0 };
+            *v += tone[i] * env;
+        }
+    }
+    x
+}
+
+#[test]
+fn adaptive_lowers_stationary_noise_without_print() {
+    let x = bursts();
+    let mut a = create("adaptive_noise_reduction").unwrap();
+    let y = processed(&x, a.as_mut());
+    let tone = (band_db(&x, &TONE, 3.0, 4.0), band_db(&y, &TONE, 3.0, 4.0));
+    assert!((tone.0 - tone.1).abs() <= 1.0, "tone {tone:?}");
+    let highs = (band_db(&x, &HIGHS, 3.0, 4.0), band_db(&y, &HIGHS, 3.0, 4.0));
+    assert!(highs.0 - highs.1 >= 10.0, "4-8 kHz {highs:?}");
+}
+
+#[test]
+fn min_tracker_follows_a_noise_step() {
+    // Exponentially distributed periodogram values with mean `m` (noise power in one bin).
+    let mut s = 99u32;
+    let mut exp = |m: f32| {
+        s ^= s << 13;
+        s ^= s >> 17;
+        s ^= s << 5;
+        let u = (s as f32 / u32::MAX as f32).clamp(1e-7, 1.0);
+        -m * u.ln()
+    };
+    let fps = SR / 512.0;
+    let mut t = MinTracker::new();
+    t.prepare(4);
+    t.set_window((1.5 * fps) as usize);
+    let (lo, hi) = (1e-6f32, 1e-4f32);
+    for _ in 0..(3.0 * fps) as usize {
+        let f: Vec<f32> = (0..4).map(|_| exp(lo)).collect();
+        t.update(&f);
+    }
+    let before: f32 = 10.0 * (t.noise()[0] / lo).log10();
+    assert!(before.abs() <= 3.0, "before the step: {before} dB off");
+    // Minima caught while the level rises linger one more window: two windows plus a margin.
+    for _ in 0..(3.5 * fps) as usize {
+        let f: Vec<f32> = (0..4).map(|_| exp(hi)).collect();
+        t.update(&f);
+    }
+    let after: f32 = 10.0 * (t.noise()[0] / hi).log10();
+    assert!(after.abs() <= 3.0, "3.5 s after the step: {after} dB off");
+}
