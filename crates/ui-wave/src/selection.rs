@@ -38,6 +38,20 @@ pub fn show(ui: &mut egui::Ui, app: &mut WaveApp) {
         ui.label(clock(view_end.saturating_sub(z.scroll), sr));
         ui.end_row();
     });
+    // Which channels edits apply to (stereo files).
+    if let Some(enabled) = app.engine.wave.as_ref().filter(|w| w.channels == 2).map(|w| w.channels_enabled.clone()) {
+        let mut next = enabled.clone();
+        ui.horizontal(|ui| {
+            ui.label("Channels");
+            for (on, label) in next.iter_mut().zip(["L", "R"]) {
+                ui.checkbox(on, label);
+            }
+        });
+        if next != enabled {
+            let channels: Vec<usize> = next.iter().enumerate().filter(|(_, on)| **on).map(|(i, _)| i).collect();
+            app.run("wave.select", json!({"channels": channels}));
+        }
+    }
     if commit {
         match (parse_clock(&app.selection_edit.start, sr), parse_clock(&app.selection_edit.end, sr)) {
             (Some(start), Some(end)) => {

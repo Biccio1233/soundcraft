@@ -39,7 +39,7 @@ impl eframe::App for App {
         let dropped: Vec<String> =
             ctx.input(|i| i.raw.dropped_files.iter().map(|f| f.path().to_string_lossy().into_owned()).filter(|s| !s.is_empty()).collect());
         if let Some(path) = dropped.into_iter().next() {
-            self.wave.run("wave.open", serde_json::json!({"path": path}));
+            self.wave.open_path(&path);
         }
         if self.wave.quit_requested() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -75,14 +75,15 @@ impl eframe::App for App {
     }
 }
 
+/// A yes/no question in a native dialog.
+fn confirm(question: &str) -> bool {
+    let answer = rfd::MessageDialog::new().set_title("WaveCraft").set_description(question).set_buttons(rfd::MessageButtons::YesNo).show();
+    answer == rfd::MessageDialogResult::Yes
+}
+
 /// Closing with unsaved changes: ask before discarding them.
 fn confirm_discard() -> bool {
-    let answer = rfd::MessageDialog::new()
-        .set_title("WaveCraft")
-        .set_description("The file has unsaved changes. Close without saving?")
-        .set_buttons(rfd::MessageButtons::YesNo)
-        .show();
-    answer == rfd::MessageDialogResult::Yes
+    confirm("The file has unsaved changes. Close without saving?")
 }
 
 fn services() -> Services {
@@ -157,7 +158,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let player = (!no_audio).then(|| soundcraft_playback::Player::new(Arc::new(engine.session().clone())));
-            let mut wave = WaveApp::new(engine, player, services());
+            let mut wave = WaveApp::new(engine, player, services()).with_confirm(Box::new(confirm));
             if let Some(port) = control_port {
                 wave = wave.with_control(control_server::start(port, cc.egui_ctx.clone()));
             }

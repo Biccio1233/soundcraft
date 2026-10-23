@@ -121,3 +121,95 @@ fn every_wave_command_is_reachable() {
         .collect();
     assert!(unreached.is_empty(), "wave commands with no menu or UI reference: {unreached:?}");
 }
+
+#[test]
+fn spectral_view_waits_for_a_drag_to_end() {
+    let mut e = opened("spectral_drag");
+    e.execute("wave.view_spectral", &json!({"on": true})).unwrap();
+    let mut h = harness(e);
+    let settled = h.state().spectral_renders();
+    assert!(settled >= 1);
+    // Drag the splitter (at a quarter of the timeline) down by 120 points over 12 frames.
+    let tl = h.state().timeline_rect();
+    let (x, y0) = (tl.center().x, tl.min.y + tl.height() * 0.25);
+    let press =
+        |pressed: bool, y: f32| Event::PointerButton { pos: pos2(x, y), button: PointerButton::Primary, pressed, modifiers: Modifiers::default() };
+    h.input_mut().events.push(Event::PointerMoved(pos2(x, y0)));
+    h.step();
+    h.input_mut().events.push(press(true, y0));
+    h.step();
+    for i in 1..=12 {
+        h.input_mut().events.push(Event::PointerMoved(pos2(x, y0 + 10.0 * i as f32)));
+        h.step();
+    }
+    assert_eq!(h.state().spectral_renders(), settled, "no recompute while the drag lasts");
+    h.input_mut().events.push(press(false, y0 + 120.0));
+    h.run();
+    assert_eq!(h.state().spectral_renders(), settled + 1, "one recompute once it ends");
+}
+
+fn other_file(test: &str) -> String {
+    let dir = std::env::temp_dir().join("wavecraft-ui-tests").join(test);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("other.wav");
+    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None };
+    std::fs::write(&path, soundcraft_audio_io::encode(&AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 4_800]] }, &opts).unwrap())
+        .unwrap();
+    path.to_str().unwrap().to_string()
+}
+
+#[test]
+fn opening_another_file_asks_before_discarding_edits() {
+    let frames = |app: &mut WaveApp| app.engine.execute("wave.info", &json!({})).unwrap()["frames"].as_u64();
+    for (answer, expected) in [(false, Some(96_000)), (true, Some(4_800))] {
+        let mut e = opened(&format!("ask_discard_{answer}"));
+        e.execute("wave.gain", &json!({"db": 1.0})).unwrap();
+        let mut app = WaveApp::new(e, None, Services::default()).with_confirm(Box::new(move |_question: &str| answer));
+        app.open_path(&other_file(&format!("ask_discard_{answer}")));
+        assert_eq!(frames(&mut app), expected, "answer {answer}");
+    }
+    // With nobody to ask, the open is refused and the edits stay.
+    let mut e = opened("ask_discard_none");
+    e.execute("wave.gain", &json!({"db": 1.0})).unwrap();
+    let mut app = WaveApp::new(e, None, Services::default());
+    app.open_path(&other_file("ask_discard_none"));
+    assert_eq!(frames(&mut app), Some(96_000));
+    assert!(app.engine.is_dirty());
+}
+
+#[test]
+fn export_options_offer_depth_and_dither() {
+    let dir = std::env::temp_dir().join("wavecraft-ui-tests").join("export_options");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = dir.join("out.wav");
+    let mut h = harness(opened("export_options_src"));
+    h.state_mut().begin_export(out.to_str().unwrap());
+    h.run();
+    h.get_by_label("16-bit").click();
+    h.run();
+    h.get_by_label("Shaped strong").click();
+    h.run();
+    h.get_by_label("Export file").click();
+    h.run();
+    let info = soundcraft_audio_io::probe(&std::fs::read(&out).unwrap(), Some("wav")).unwrap();
+    assert_eq!(info.sample_format, soundcraft_audio_io::SampleFormat::Int16);
+    assert!(h.query_by_label("Export file").is_none(), "the options window closes");
+}
+
+#[test]
+fn channel_toggles_set_the_enabled_channels() {
+    let dir = std::env::temp_dir().join("wavecraft-ui-tests").join("channel_toggles");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("stereo.wav");
+    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Int16, dither: false, bwf: None };
+    std::fs::write(&path, soundcraft_audio_io::encode(&AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.1; 4_800]; 2] }, &opts).unwrap())
+        .unwrap();
+    let mut e = Engine::default();
+    e.execute("wave.open", &json!({"path": path.to_str().unwrap()})).unwrap();
+    let mut h = harness(e);
+    h.get_by_label("R").click();
+    h.run();
+    assert_eq!(exec(&mut h, "wave.info", json!({}))["channels_enabled"], json!([true, false]));
+}

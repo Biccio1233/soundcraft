@@ -138,26 +138,26 @@ fn draw_spectral(ui: &egui::Ui, app: &mut WaveApp, r: Rect, t: &Tokens) {
     let painter = ui.painter_at(r);
     painter.rect_filled(r, 0.0, Color32::from_rgb(8, 4, 20));
     let key = spectral_key(app, r);
-    if app.spectral_cache.as_ref().is_none_or(|(k, _)| *k != key) {
+    // While a drag or a scroll is under way the old texture stays (stretched): recomputing every
+    // frame of a gesture would stall the UI.
+    let busy = ui.input(|i| i.pointer.any_down() || i.smooth_scroll_delta != egui::Vec2::ZERO);
+    let stale = app.spectral_cache.as_ref().is_none_or(|(k, _)| *k != key);
+    if stale && (app.spectral_cache.is_none() || !busy) {
         let s = app.engine.session();
         let channels = app.engine.wave.as_ref().map_or(1, |w| w.channels).max(1);
         let columns = (r.width().round().max(1.0) as usize).min(2048);
         let rows = ((r.height() / channels as f32).round().max(8.0) as usize).min(256);
         let hop = s.edit.zoom.samples_per_px.round().max(1.0) as usize;
         let start = s.edit.zoom.scroll;
-        let span = (columns * hop + spectral::fft_size()) as Samples;
-        let audio = s.tracks.first().map(|tr| render_audio(s, tr.id, start, span)).unwrap_or_default();
-        let mut pixels = Vec::with_capacity(columns * rows * channels);
-        for ch in audio.iter().take(channels) {
-            match spectral::tile(ch, app.sample_rate(), hop, columns, rows) {
-                Some(tile) => pixels.extend(tile.image().pixels),
-                None => pixels.extend(std::iter::repeat_n(spectral::colour(-144.0), columns * rows)),
-            }
-        }
+        let track = s.tracks.first().map(|t| t.id);
+        let render = |at: Samples, len: usize| track.map(|t| render_audio(s, t, at, len as Samples)).unwrap_or_default();
+        let tiles = spectral::tiles_from(render, start, hop, columns, rows, app.sample_rate(), channels);
+        let pixels: Vec<Color32> = tiles.iter().flat_map(|t| t.image().pixels).collect();
         if pixels.len() == columns * rows * channels {
             let image = egui::ColorImage::new([columns, rows * channels], pixels);
             let tex = ui.ctx().load_texture("wave_spectral", image, egui::TextureOptions::LINEAR);
             app.spectral_cache = Some((key, tex));
+            app.spectral_renders = app.spectral_renders.wrapping_add(1);
         }
     }
     if let Some((_, tex)) = &app.spectral_cache {

@@ -42,8 +42,44 @@ impl Tile {
     }
 }
 
+/// One tile per channel for a view: column `c` analyses the `fft_size()` samples that `render`
+/// returns for position `start + c × hop` (planar, one `Vec` per channel). Only those samples are
+/// ever rendered, however far apart the columns are.
+pub fn tiles_from(
+    mut render: impl FnMut(soundcraft_time::Samples, usize) -> Vec<Vec<f32>>,
+    start: soundcraft_time::Samples,
+    hop: usize,
+    columns: usize,
+    rows: usize,
+    sample_rate: u32,
+    channels: usize,
+) -> Vec<Tile> {
+    let mut tiles: Vec<Tile> = (0..channels).map(|_| Tile { columns, rows, data: vec![-144.0; columns * rows] }).collect();
+    if columns == 0 || rows == 0 {
+        return tiles;
+    }
+    let silence = vec![0.0f32; FFT_SIZE];
+    for col in 0..columns {
+        let at = start.saturating_add((col as i64).saturating_mul(hop as i64));
+        let block = render(at, FFT_SIZE);
+        for (ch, tile) in tiles.iter_mut().enumerate() {
+            let x = block.get(ch).filter(|b| !b.is_empty()).unwrap_or(&silence);
+            let Ok(frames) = soundcraft_dsp::stft::spectrogram(x, sample_rate, FFT_SIZE, FFT_SIZE, rows, F_MIN) else { continue };
+            let Some(frame) = frames.first() else { continue };
+            for (band, db) in frame.iter().enumerate() {
+                let row = rows - 1 - band;
+                if let Some(cell) = tile.data.get_mut(row * columns + col) {
+                    *cell = *db;
+                }
+            }
+        }
+    }
+    tiles
+}
+
 /// The spectral tile of `x`: one frame every `hop` samples, `columns` of them, `rows` bands from
 /// `F_MIN` to Nyquist. `None` when the sizes are unusable.
+#[cfg(test)]
 pub fn tile(x: &[f32], sample_rate: u32, hop: usize, columns: usize, rows: usize) -> Option<Tile> {
     if columns == 0 || rows == 0 || x.is_empty() {
         return None;
@@ -67,7 +103,8 @@ pub fn axis_fraction(hz: f32, sample_rate: u32) -> f32 {
     ((hz / F_MIN).ln() / (nyquist / F_MIN).ln()).clamp(0.0, 1.0)
 }
 
-/// The FFT size the view uses (callers render this much audio beyond the visible range).
+/// The FFT size the view uses.
+#[cfg(test)]
 pub fn fft_size() -> usize {
     FFT_SIZE
 }
@@ -89,6 +126,25 @@ mod tests {
         let lo = soundcraft_dsp::stft::band_edge_hz(band.saturating_sub(1), rows, F_MIN, 24_000.0);
         let hi = soundcraft_dsp::stft::band_edge_hz(band + 2, rows, F_MIN, 24_000.0);
         assert!((lo..=hi).contains(&440.0), "brightest row {row} spans {lo}..{hi} Hz");
+    }
+
+    #[test]
+    fn columns_render_only_what_they_analyse() {
+        // A long view (one column every 48 000 samples): each column asks for one FFT's worth of
+        // audio, never the whole span.
+        let mut asked = 0usize;
+        let render = |start: i64, len: usize| {
+            asked += len;
+            vec![(0..len).map(|i| 0.5 * (std::f32::consts::TAU * 440.0 * (start as f32 + i as f32) / 48_000.0).sin()).collect::<Vec<f32>>()]
+        };
+        let tiles = tiles_from(render, 0, 48_000, 40, 120, 48_000, 1);
+        assert_eq!(asked, 40 * fft_size());
+        let t = &tiles[0];
+        let row = (0..t.rows).max_by(|a, b| t.db(20, *a).total_cmp(&t.db(20, *b))).unwrap();
+        let band = t.rows - 1 - row;
+        let lo = soundcraft_dsp::stft::band_edge_hz(band.saturating_sub(1), t.rows, F_MIN, 24_000.0);
+        let hi = soundcraft_dsp::stft::band_edge_hz(band + 2, t.rows, F_MIN, 24_000.0);
+        assert!((lo..=hi).contains(&440.0), "{lo}..{hi}");
     }
 
     #[test]

@@ -49,7 +49,25 @@ pub struct WaveApp {
     spectral_cache: Option<(u64, egui::TextureHandle)>,
     /// The control channel (agents driving the running app).
     control: control::Control,
+    /// How many times the spectral texture was computed (a diagnostic).
+    spectral_renders: u64,
+    /// Asks the user a yes/no question (the app wires a native dialog; absent in tests).
+    confirm: Option<Box<dyn Fn(&str) -> bool>>,
+    /// The export waiting for its options (path chosen, depth and dither still to pick).
+    export: Option<Export>,
 }
+
+/// An export whose path is chosen: the options window picks depth and dither.
+struct Export {
+    path: String,
+    depth: &'static str,
+    dither: &'static str,
+}
+
+/// Bit depths offered by the export window: (param, label).
+const DEPTHS: [(&str, &str); 4] = [("16", "16-bit"), ("24", "24-bit"), ("32", "32-bit"), ("32f", "32-bit float")];
+/// Dither profiles offered by the export window: (param, label).
+const DITHERS: [(&str, &str); 4] = [("none", "None"), ("tpdf", "TPDF"), ("shaped_light", "Shaped light"), ("shaped_strong", "Shaped strong")];
 
 impl WaveApp {
     pub fn new(engine: Engine, player: Option<Player>, services: Services) -> Self {
@@ -69,7 +87,34 @@ impl WaveApp {
             spectral_split: 0.25,
             spectral_cache: None,
             control: control::Control::default(),
+            spectral_renders: 0,
+            confirm: None,
+            export: None,
         }
+    }
+
+    /// How to ask the user a yes/no question (e.g. before discarding unsaved edits).
+    pub fn with_confirm(mut self, confirm: Box<dyn Fn(&str) -> bool>) -> Self {
+        self.confirm = Some(confirm);
+        self
+    }
+
+    /// Open `path`, asking first when the open file has unsaved edits. With nobody to ask, the
+    /// engine refuses and the edits stay.
+    pub fn open_path(&mut self, path: &str) {
+        let mut params = json!({"path": path});
+        if self.engine.wave.is_some() && self.engine.is_dirty() {
+            let Some(ask) = &self.confirm else {
+                self.run("wave.open", params);
+                return;
+            };
+            if !ask("The open file has unsaved changes. Discard them and open another file?") {
+                return;
+            }
+            params["discard"] = json!(true);
+        }
+        self.stop();
+        self.run("wave.open", params);
     }
 
     /// Run a command; an error goes to the status line. Returns the result when it worked.
@@ -99,6 +144,11 @@ impl WaveApp {
     /// Where position `at` (samples) is drawn in the waveform area, in points.
     pub fn x_for(&self, at: Samples) -> f32 {
         soundcraft_ui_egui::edit_window::x_of(self.engine.session(), self.timeline, at)
+    }
+
+    /// How many times the spectral texture has been computed.
+    pub fn spectral_renders(&self) -> u64 {
+        self.spectral_renders
     }
 
     /// The open file's sample rate (48 kHz when nothing is open).
@@ -186,12 +236,11 @@ impl WaveApp {
         let picked =
             self.services.pick_open.as_ref().and_then(|pick| pick("Open audio file", &["wav", "wave", "aif", "aiff", "flac", "mp3", "m4a", "ogg"]));
         if let Some(path) = picked {
-            self.stop();
-            self.run("wave.open", json!({"path": path}));
+            self.open_path(&path);
         }
     }
 
-    /// Ask where to export, then export with WaveCraft's defaults (24-bit unless the name says otherwise).
+    /// Ask where to export, then show the options window (depth and dither).
     fn export_dialog(&mut self) {
         let name = self
             .engine
@@ -203,7 +252,55 @@ impl WaveApp {
             .unwrap_or("Untitled");
         let suggested = format!("{name} (edit).wav");
         if let Some(path) = self.services.pick_save.as_ref().and_then(|pick| pick("Export", &suggested)) {
-            self.run("wave.export", json!({"path": path}));
+            self.begin_export(&path);
+        }
+    }
+
+    /// Open the export options for `path` (24-bit, no dither to start with).
+    pub fn begin_export(&mut self, path: &str) {
+        self.export = Some(Export { path: path.to_string(), depth: "24", dither: "none" });
+    }
+
+    /// The export options window, while an export waits for them.
+    fn export_window(&mut self, ctx: &egui::Context) {
+        let Some(mut ex) = self.export.take() else { return };
+        let mut done = None;
+        egui::Window::new("Export options").collapsible(false).resizable(false).show(ctx, |ui| {
+            ui.label(std::path::Path::new(&ex.path).file_name().and_then(|n| n.to_str()).unwrap_or(&ex.path).to_string());
+            ui.horizontal(|ui| {
+                for (value, label) in DEPTHS {
+                    if ui.selectable_label(ex.depth == value, label).clicked() && ex.depth != value {
+                        ex.depth = value;
+                        // TPDF suits 16 bits; above that the quantization error is already inaudible.
+                        ex.dither = if value == "16" { "tpdf" } else { "none" };
+                    }
+                }
+            });
+            ui.add_enabled_ui(ex.depth != "32f", |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Dither");
+                    for (value, label) in DITHERS {
+                        if ui.selectable_label(ex.dither == value, label).clicked() {
+                            ex.dither = value;
+                        }
+                    }
+                });
+            });
+            ui.horizontal(|ui| {
+                if ui.button("Export file").clicked() {
+                    done = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    done = Some(false);
+                }
+            });
+        });
+        match done {
+            Some(true) => {
+                self.run("wave.export", json!({"path": ex.path, "bit_depth": ex.depth, "dither": ex.dither}));
+            }
+            Some(false) => {}
+            None => self.export = Some(ex),
         }
     }
 
@@ -235,6 +332,8 @@ impl WaveApp {
             history::show(ui, self);
         });
         egui::CentralPanel::default().show(ui, |ui| editor::show(ui, self));
+        let ctx = ui.ctx().clone();
+        self.export_window(&ctx);
     }
 
     /// Keyboard shortcuts from the menus, plus Space for play/stop.
