@@ -4,6 +4,7 @@
 
 pub mod chroma;
 pub mod cqt;
+pub mod key;
 pub mod resample;
 pub mod spectrum;
 pub mod tempo;
