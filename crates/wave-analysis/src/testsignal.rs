@@ -128,3 +128,126 @@ pub fn drums(bpm: f32, bars: usize, beats_per_bar: usize, sr: u32) -> (Vec<f32>,
     }
     (out, times)
 }
+
+use crate::chords::{Chord, Quality};
+use crate::sections::SectionLabel;
+
+/// A song to render: one chord per bar, grouped in labelled sections.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SongSpec {
+    pub bpm: f32,
+    pub a4_hz: f32,
+    pub sample_rate: u32,
+    pub sections: Vec<(SectionLabel, Vec<Chord>)>,
+    pub seed: u32,
+    /// The key the chords are in, carried into the truth.
+    pub key: String,
+}
+
+/// What a rendered song contains, in seconds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Truth {
+    pub beats: Vec<f32>,
+    pub downbeats: Vec<f32>,
+    pub bars: Vec<(f32, f32, Chord)>,
+    pub sections: Vec<(f32, f32, SectionLabel)>,
+    pub key: String,
+}
+
+/// Stereo audio of `spec` (4/4) and its truth. Intro and outro: pad only. Verse: drums, bass on
+/// beats 1 and 3, pad. Chorus: louder hi-hats, bass on every beat, pad doubled an octave up.
+/// Bridge: no kick. The mix peaks at 0.8.
+pub fn song(spec: &SongSpec) -> (Vec<Vec<f32>>, Truth) {
+    let sr = spec.sample_rate.max(1);
+    let beat = 60.0 / spec.bpm.max(1.0);
+    let bar = 4.0 * beat;
+    let total_bars: usize = spec.sections.iter().map(|s| s.1.len()).sum();
+    let len = ((total_bars as f32 * bar + 1.0) * sr as f32) as usize;
+    let (mut left, mut right) = (vec![0.0f32; len], vec![0.0f32; len]);
+    let mut truth = Truth { beats: Vec::new(), downbeats: Vec::new(), bars: Vec::new(), sections: Vec::new(), key: spec.key.clone() };
+    let (kick, snare) = (drum(Drum::Kick, sr, spec.seed), drum(Drum::Snare, sr, spec.seed.wrapping_add(1)));
+    let mut b = 0usize;
+    for (label, chords) in &spec.sections {
+        let section_start = b as f32 * bar;
+        let (drums_on, kick_on, chorus) = match label {
+            SectionLabel::Intro | SectionLabel::Outro => (false, false, false),
+            SectionLabel::Bridge => (true, false, false),
+            SectionLabel::Chorus => (true, true, true),
+            _ => (true, true, false),
+        };
+        for chord_bar in chords {
+            let t0 = b as f32 * bar;
+            truth.downbeats.push(t0);
+            truth.bars.push((t0, t0 + bar, *chord_bar));
+            let at = |t: f32| (t * sr as f32) as usize;
+            // Pad: the chord tones from C4 up, re-struck each bar.
+            let mut notes: Vec<f32> = chord_bar.quality.intervals().iter().map(|i| 60.0 + f32::from(chord_bar.root) + f32::from(*i)).collect();
+            if chorus {
+                notes.extend(notes.clone().iter().map(|n| n + 12.0));
+            }
+            let pad = chord(&notes, bar, spec.a4_hz, sr);
+            add_at(&mut left, at(t0), &pad, 1.4);
+            add_at(&mut right, at(t0), &pad, 1.0);
+            for k in 0..4 {
+                let t = t0 + k as f32 * beat;
+                truth.beats.push(t);
+                if !drums_on {
+                    continue;
+                }
+                let hit = if k % 2 == 0 { kick_on.then_some(&kick) } else { Some(&snare) };
+                if let Some(h) = hit {
+                    add_at(&mut left, at(t), h, 1.0);
+                    add_at(&mut right, at(t), h, 1.0);
+                }
+                for half in 0..2 {
+                    let hat = drum(Drum::HiHat, sr, spec.seed.wrapping_add(10 + (8 * b + 2 * k + half) as u32));
+                    let g = if chorus { 2.5 } else { 1.0 };
+                    add_at(&mut left, at(t + half as f32 * beat / 2.0), &hat, g * 0.8);
+                    add_at(&mut right, at(t + half as f32 * beat / 2.0), &hat, g * 1.2);
+                }
+                if chorus || k % 2 == 0 {
+                    let bass =
+                        note(36.0 + f32::from(chord_bar.bass.unwrap_or(chord_bar.root)), if chorus { beat } else { 2.0 * beat }, spec.a4_hz, sr);
+                    add_at(&mut left, at(t), &bass, 2.0);
+                    add_at(&mut right, at(t), &bass, 2.0);
+                }
+            }
+            b += 1;
+        }
+        truth.sections.push((section_start, b as f32 * bar, *label));
+    }
+    let peak = left.iter().chain(&right).fold(0.0f32, |m, v| m.max(v.abs()));
+    if peak > 0.0 {
+        let g = 0.8 / peak;
+        left.iter_mut().chain(right.iter_mut()).for_each(|v| *v *= g);
+    }
+    (vec![left, right], truth)
+}
+
+/// The F2 acceptance song: A minor, 96 BPM, A4 = 436 Hz, 48 kHz; intro 4 | verse 8 | chorus 8 |
+/// verse 8 | chorus 8 | bridge 4 | chorus 8 | outro 4 bars; verse Am F C G, chorus F G C Am,
+/// bridge Dm E, intro and outro Am.
+pub fn acceptance_song() -> SongSpec {
+    let c = |root, quality| Chord { root, quality, bass: None };
+    let (am, f, cm, g, dm, e) =
+        (c(9, Quality::Min), c(5, Quality::Maj), c(0, Quality::Maj), c(7, Quality::Maj), c(2, Quality::Min), c(4, Quality::Maj));
+    let verse: Vec<Chord> = [am, f, cm, g].iter().copied().cycle().take(8).collect();
+    let chorus: Vec<Chord> = [f, g, cm, am].iter().copied().cycle().take(8).collect();
+    SongSpec {
+        bpm: 96.0,
+        a4_hz: 436.0,
+        sample_rate: 48_000,
+        sections: vec![
+            (SectionLabel::Intro, vec![am; 4]),
+            (SectionLabel::Verse, verse.clone()),
+            (SectionLabel::Chorus, chorus.clone()),
+            (SectionLabel::Verse, verse),
+            (SectionLabel::Chorus, chorus.clone()),
+            (SectionLabel::Bridge, vec![dm, dm, e, e]),
+            (SectionLabel::Chorus, chorus),
+            (SectionLabel::Outro, vec![am; 4]),
+        ],
+        seed: 7,
+        key: "A minor".into(),
+    }
+}
