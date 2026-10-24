@@ -12,6 +12,7 @@ pub mod spectrum;
 pub mod tempo;
 pub mod testsignal;
 pub mod tuning;
+pub mod voicing;
 
 pub use resample::resample;
 
