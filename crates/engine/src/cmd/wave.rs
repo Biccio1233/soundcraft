@@ -39,6 +39,8 @@ pub struct WaveFile {
     pub spectral: bool,
     /// The noise print captured for noise reduction (not part of the file, not an undo step).
     pub noise_print: Option<super::wave_restore::NoiseCapture>,
+    /// Show the beat, chord and section lanes when an analysis exists (a view setting).
+    pub show_analysis: bool,
     /// The last music analysis (not part of the file, not an undo step).
     pub analysis: Option<super::wave_analysis::Analysis>,
     /// Timed words and the lyrics aligned to them (not part of the file, not an undo step).
@@ -220,6 +222,7 @@ fn open(e: &mut Engine, p: &Value) -> Result<Value> {
         history_dropped: 0,
         spectral: false,
         noise_print: None,
+        show_analysis: true,
         analysis: None,
         lyrics: Default::default(),
     });

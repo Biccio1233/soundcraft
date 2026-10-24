@@ -269,3 +269,86 @@ fn amplitude_statistics_window_shows_rms() {
     h.run();
     assert!(h.query_by_label_contains("RMS").is_some());
 }
+
+/// An engine with a 45 s synthetic song open: intro, verse, chorus, verse, chorus (A minor, 96 BPM).
+fn song_opened(test: &str) -> Engine {
+    use soundcraft_wave_analysis::chords::{Chord, Quality};
+    use soundcraft_wave_analysis::sections::SectionLabel;
+    use soundcraft_wave_analysis::testsignal::{SongSpec, acceptance_song, song};
+    let c = |root, quality| Chord { root, quality, bass: None };
+    let (am, f, cm, g) = (c(9, Quality::Min), c(5, Quality::Maj), c(0, Quality::Maj), c(7, Quality::Maj));
+    let spec = SongSpec {
+        sections: vec![
+            (SectionLabel::Intro, vec![am, am]),
+            (SectionLabel::Verse, vec![am, f, cm, g]),
+            (SectionLabel::Chorus, vec![f, g, cm, am]),
+            (SectionLabel::Verse, vec![am, f, cm, g]),
+            (SectionLabel::Chorus, vec![f, g, cm, am]),
+        ],
+        ..acceptance_song()
+    };
+    let (channels, _) = song(&spec);
+    let dir = std::env::temp_dir().join("wavecraft-ui-tests").join(test);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("song.wav");
+    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+    std::fs::write(&path, soundcraft_audio_io::encode(&AudioBuffer { sample_rate: spec.sample_rate, channels }, &opts).unwrap()).unwrap();
+    let mut e = Engine::default();
+    e.execute("wave.open", &json!({"path": path.to_str().unwrap()})).unwrap();
+    e
+}
+
+fn menu(h: &mut Harness<'static, WaveApp>, label: &str) {
+    let item = WAVE_MENUS.iter().find(|m| m.label == label).unwrap_or_else(|| panic!("no menu item {label}"));
+    soundcraft_ui_wave::menus::invoke(h.state_mut(), item);
+    h.run();
+}
+
+#[test]
+fn analysis_menu_items_reach_their_commands() {
+    let ids: Vec<&str> = soundcraft_engine::command_specs().iter().map(|c| c.id).collect();
+    let analysis: Vec<_> = WAVE_MENUS.iter().filter(|m| m.path.first() == Some(&"Analysis")).collect();
+    for label in ["Analyze Song", "Chords & Lyrics…", "Chord Diagrams…", "Load Lyrics Text…", "Export ChordPro…", "Show Analysis Lanes"] {
+        let m = analysis.iter().find(|m| m.label == label).unwrap_or_else(|| panic!("Analysis ▸ {label} missing"));
+        assert!(ids.contains(&m.command), "{label}: {} is not a command", m.command);
+    }
+}
+
+#[test]
+fn analyze_song_shows_lanes() {
+    let mut h = harness(song_opened("analysis_lanes"));
+    assert!(h.state().analysis_lanes().is_none());
+    menu(&mut h, "Analyze Song");
+    let lanes = h.state().analysis_lanes().expect("lanes after analysis");
+    assert!(lanes.chords.iter().any(|c| c.2 == "Am"), "{:?}", lanes.chords);
+    assert!(lanes.sections.iter().any(|s| s.2 == "chorus"), "{:?}", lanes.sections);
+    assert!(lanes.bars.len() >= 16 && lanes.beats.len() >= 64);
+    menu(&mut h, "Show Analysis Lanes");
+    assert!(h.state().analysis_lanes().is_none());
+}
+
+#[test]
+fn chords_and_lyrics_window_shows_text() {
+    let mut e = song_opened("analysis_lyrics_window");
+    let words = json!([{"word": "chiusa", "start": 5.1, "end": 5.6}, {"word": "vive", "start": 5.7, "end": 6.2}, {"word": "dentro", "start": 7.6, "end": 8.0}]);
+    e.execute("wave.lyrics_set", &json!({"words": words})).unwrap();
+    let mut h = harness(e);
+    menu(&mut h, "Chords & Lyrics…");
+    assert!(h.query_all_by_label_contains("chiusa").next().is_some(), "no lyric line");
+    assert!(h.query_all_by_label_contains("Am").next().is_some(), "no chord line");
+    menu(&mut h, "Chord Diagrams…");
+    assert!(h.query_all_by_label_contains("Capo").count() >= 2, "both windows show the capo");
+}
+
+#[test]
+fn diagram_window_draws_every_quality() {
+    use soundcraft_wave_analysis::chords::{Chord, QUALITIES};
+    for q in QUALITIES {
+        let chord = Chord { root: 4, quality: q, bass: None };
+        let v = soundcraft_wave_analysis::voicing::voicings(&chord).into_iter().next().expect("a voicing");
+        let d = json!({"label": chord.label(None), "frets": v.frets, "fingers": v.fingers, "base_fret": v.base_fret, "barre": v.barre});
+        let mut h = Harness::builder().with_size(vec2(200.0, 200.0)).build_ui(move |ui| soundcraft_ui_wave::analysis::diagram(ui, &d));
+        h.run();
+    }
+}

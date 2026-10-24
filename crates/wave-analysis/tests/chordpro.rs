@@ -132,3 +132,26 @@ fn no_chord_is_never_a_label() {
     let cho = chordpro::render_cho(&s);
     assert!(cho.ends_with("uno [C]due\n") && !cho.contains("[]"), "{cho}");
 }
+
+#[test]
+fn line_just_after_a_section_start_gets_no_extra_chord_line() {
+    // Am from the intro runs into the verse; the singer enters 0.3 s after the verse starts.
+    let mut s = song(vec![Line { words: vec![w("Chiusa", 10.3, 10.8)] }], &[(0.0, 12.5, "Am"), (12.5, 15.0, "F")]);
+    s.sections = vec![
+        Section { start: 0.0, end: 10.0, letter: 'A', label: SectionLabel::Intro },
+        Section { start: 10.0, end: 20.0, letter: 'B', label: SectionLabel::Verse },
+    ];
+    let cho = chordpro::render_cho(&s);
+    assert!(cho.contains("{c: Intro}\n[Am]\n{c: Verse}\n[Am]Chiusa\n"), "{cho}");
+}
+
+#[test]
+fn early_changes_still_group_by_bar() {
+    // Detected bar starts run a few hundredths early: the fifth chord must open the next line.
+    let times = [0.0, 2.48, 4.97, 7.46, 9.95, 12.44];
+    let labels = ["C", "G", "Am", "F", "C", "G"];
+    let chords: Vec<(f32, f32, &str)> =
+        times.iter().zip(labels).enumerate().map(|(i, (t, l))| (*t, times.get(i + 1).copied().unwrap_or(14.9), l)).collect();
+    let s = song(vec![], &chords);
+    assert!(chordpro::render_cho(&s).ends_with("\n[C] [G] [Am] [F]\n[C] [G]\n"), "{}", chordpro::render_cho(&s));
+}

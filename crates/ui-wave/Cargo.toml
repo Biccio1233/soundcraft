@@ -13,6 +13,7 @@ soundcraft-dsp.workspace = true
 soundcraft-model.workspace = true
 soundcraft-mix.workspace = true
 soundcraft-engine.workspace = true
+soundcraft-wave-analysis.workspace = true
 soundcraft-playback.workspace = true
 soundcraft-ui-egui.workspace = true
 egui.workspace = true

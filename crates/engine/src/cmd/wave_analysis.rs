@@ -78,6 +78,7 @@ pub fn specs() -> Vec<CommandSpec> {
             analyze_chords
         ),
         cmd!(query "wave.analyze_sections", "Analyze Sections", [], None, "{start?, end?} — {sections: [{start, end, letter, label}]}: intro, verse, chorus, bridge, instrumental, outro, other", has_file, analyze_sections),
+        cmd!(view "wave.view_analysis", "Show Analysis Lanes", [], None, "{on?: bool} — show or hide the beat, chord and section lanes (toggles without `on`)", has_file, view_analysis),
         cmd!(query "wave.analysis_info", "Analysis Info", [], None, "{} — {analyzed, stale?}: stale once the audio changed since the analysis", has_file, analysis_info),
         cmd!(
             query "wave.chord_diagrams",
@@ -342,6 +343,13 @@ fn analyze_chords(e: &mut Engine, p: &Value) -> Result<Value> {
 fn analyze_sections(e: &mut Engine, p: &Value) -> Result<Value> {
     ensure(e, "wave.analyze_sections", p)?;
     Ok(json!({"sections": sections_json(current(e)?)}))
+}
+
+fn view_analysis(e: &mut Engine, p: &Value) -> Result<Value> {
+    let on = p.get("on").and_then(Value::as_bool);
+    let w = e.wave.as_mut().ok_or_else(|| EngineError::NotFound("no file open".into()))?;
+    w.show_analysis = on.unwrap_or(!w.show_analysis);
+    Ok(json!({"show_analysis": w.show_analysis}))
 }
 
 fn analysis_info(e: &mut Engine, _: &Value) -> Result<Value> {
@@ -652,6 +660,16 @@ mod tests {
                 _ => assert!(serde_json::from_str::<Value>(&text).unwrap()["chords"].is_array()),
             }
         }
+    }
+
+    #[test]
+    fn analysis_lanes_toggle_is_a_view_command() {
+        let mut e = open_song("analysis_lanes_toggle", &short_song(), 48_000);
+        assert_eq!(e.wave.as_ref().map(|w| w.show_analysis), Some(true));
+        let n = e.undo_history().len();
+        assert_eq!(run(&mut e, "wave.view_analysis", json!({}))["show_analysis"], false);
+        assert_eq!(run(&mut e, "wave.view_analysis", json!({"on": true}))["show_analysis"], true);
+        assert_eq!(e.undo_history().len(), n);
     }
 
     #[test]

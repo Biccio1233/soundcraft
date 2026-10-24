@@ -70,8 +70,15 @@ fn chord_lines(song: &Song, from: f32, to: f32, mut carry: bool, out: &mut Vec<(
         let mut ws = span[0];
         while ws < span[1] - 1e-4 {
             let we = (ws + window).min(span[1]);
-            let mut tokens: Vec<(f32, String)> = all.iter().filter(|(t, _)| *t >= ws - 1e-4 && *t < we - 1e-4).cloned().collect();
+            // Detected bar starts wander a little: a change just before a line's end opens the next.
+            let slack = (0.25 * song.bar_s).min(0.5);
+            let lo = if ws == span[0] { ws - 1e-4 } else { ws - slack };
+            let hi = if we >= span[1] - 1e-4 { we - 1e-4 } else { we - slack };
+            let mut tokens: Vec<(f32, String)> = all.iter().filter(|(t, _)| *t >= lo && *t < hi).cloned().collect();
+            // A chord still sounding opens a line of its own, but not a sliver shorter than a bar
+            // (a lyric line right after a section start shows it anyway).
             if carry
+                && we - ws >= 0.9 * song.bar_s
                 && tokens.first().is_none_or(|(t, _)| *t > ws + TOL_S)
                 && let Some(a) = active(song, ws)
             {

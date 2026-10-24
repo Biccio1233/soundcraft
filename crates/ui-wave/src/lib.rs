@@ -3,6 +3,7 @@
 //! `engine.execute`, so menus, shortcuts, the CLI, the control channel and MCP do the same thing.
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
+pub mod analysis;
 pub mod control;
 mod editor;
 mod files;
@@ -60,6 +61,8 @@ pub struct WaveApp {
     effect: Option<restore::EffectDialog>,
     /// The Amplitude Statistics window's last measurement (`Null`: nothing to measure).
     stats: Option<Value>,
+    /// The analysis level, capo and windows.
+    analysis: analysis::View,
 }
 
 /// An export whose path is chosen: the options window picks depth and dither.
@@ -97,6 +100,7 @@ impl WaveApp {
             export: None,
             effect: None,
             stats: None,
+            analysis: analysis::View::default(),
         }
     }
 
@@ -343,6 +347,12 @@ impl WaveApp {
         self.export_window(&ctx);
         restore::effect_window(&ctx, self);
         restore::stats_window(&ctx, self);
+        analysis::windows(&ctx, self);
+    }
+
+    /// The beat, chord and section lanes the editor shows, if any.
+    pub fn analysis_lanes(&self) -> Option<analysis::Lanes> {
+        analysis::lanes(self)
     }
 
     /// Keyboard shortcuts from the menus, plus Space for play/stop.

@@ -3810,6 +3810,7 @@ dependencies = [
  "soundcraft-playback",
  "soundcraft-time",
  "soundcraft-ui-egui",
+ "soundcraft-wave-analysis",
 ]
 
 [[package]]

@@ -15,6 +15,9 @@ pub enum Dialog {
     SavePrint,
     LoadPrint,
     LoadLyrics,
+    ChordsLyrics,
+    Diagrams,
+    ExportChordPro,
     /// The dialog of a restoration effect (the built-in plugin's id).
     Effect(&'static str),
     Stats,
@@ -89,7 +92,11 @@ pub const WAVE_MENUS: &[MenuItem] = &[
     file(RESTORE, "Load Noise Print…", "wave.noise_print_load", None, Dialog::LoadPrint),
     item(RESTORE, "Clear Noise Print", "wave.noise_print_clear", "", None),
     item(&["Analysis"], "Analyze Song", "wave.analyze", "", Some("Cmd+Shift+A")),
+    file(&["Analysis"], "Chords & Lyrics…", "wave.chords_over_lyrics", Some("Cmd+Shift+L"), Dialog::ChordsLyrics),
+    file(&["Analysis"], "Chord Diagrams…", "wave.chord_diagrams", None, Dialog::Diagrams),
     file(&["Analysis"], "Load Lyrics Text…", "wave.lyrics_set", None, Dialog::LoadLyrics),
+    file(&["Analysis"], "Export ChordPro…", "wave.chordpro_export", None, Dialog::ExportChordPro),
+    item(&["Analysis"], "Show Analysis Lanes", "wave.view_analysis", "", None),
     item(&["View"], "Spectral Display", "wave.view_spectral", "", Some("Cmd+Shift+D")),
     file(&["Window"], "Amplitude Statistics…", "wave.stats", None, Dialog::Stats),
 ];
@@ -178,6 +185,14 @@ pub fn invoke(app: &mut WaveApp, m: &MenuItem) {
         }
         Dialog::Effect(plugin) => app.open_effect(plugin, m.command),
         Dialog::Stats => app.open_stats(),
+        Dialog::ChordsLyrics => crate::analysis::open(app, true),
+        Dialog::Diagrams => crate::analysis::open(app, false),
+        Dialog::ExportChordPro => {
+            if let Some(path) = app.services.pick_save.as_ref().and_then(|pick| pick("Export ChordPro", "song.cho")) {
+                let p = crate::analysis::export_params(app, &path);
+                app.run(m.command, p);
+            }
+        }
         Dialog::LoadLyrics => {
             if let Some(path) = app.services.pick_open.as_ref().and_then(|pick| pick("Load lyrics", &["txt"])) {
                 app.run(m.command, json!({"path": path}));

@@ -1,7 +1,7 @@
 //! The Editor: an overview of the whole file, a time ruler, the waveform with the selection, and
 //! the transport. Drag to select, click to place the cursor, scroll to move, Cmd+scroll to zoom.
 
-use crate::{WaveApp, clock, spectral};
+use crate::{WaveApp, analysis, clock, spectral};
 use egui::{Color32, Rect, Sense, Stroke, pos2, vec2};
 use serde_json::json;
 use soundcraft_model::ClipContent;
@@ -19,7 +19,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut WaveApp) {
     let full = ui.available_rect_before_wrap();
     let overview = Rect::from_min_size(full.min, vec2(full.width(), OVERVIEW_H));
     let ruler = Rect::from_min_size(pos2(full.min.x, overview.max.y + 2.0), vec2(full.width(), RULER_H));
-    let timeline = Rect::from_min_max(pos2(full.min.x, ruler.max.y), pos2(full.max.x, (full.max.y - TRANSPORT_H).max(ruler.max.y + 10.0)));
+    let lanes = analysis::lanes(app);
+    let lanes_r = Rect::from_min_size(pos2(full.min.x, ruler.max.y), vec2(full.width(), if lanes.is_some() { analysis::LANES_H } else { 0.0 }));
+    let timeline = Rect::from_min_max(pos2(full.min.x, lanes_r.max.y), pos2(full.max.x, (full.max.y - TRANSPORT_H).max(lanes_r.max.y + 10.0)));
     let transport = Rect::from_min_max(pos2(full.min.x, timeline.max.y), full.max);
     app.timeline = timeline;
     let len = app.file_len();
@@ -32,6 +34,9 @@ pub fn show(ui: &mut egui::Ui, app: &mut WaveApp) {
     }
     draw_overview(&painter, app, overview, len, &t);
     draw_ruler(&painter, app, ruler, &t);
+    if let Some(l) = &lanes {
+        analysis::draw_lanes(&painter, app, l, lanes_r, &t);
+    }
     draw_wave(ui, app, timeline, &t);
     interact(ui, app, overview, timeline, len);
     transport_bar(ui, app, transport);
