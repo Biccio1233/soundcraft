@@ -3839,6 +3839,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "soundcraft-wave-analysis"
+version = "0.12.1"
+dependencies = [
+ "rustfft",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "soundcraft-web"
 version = "0.12.1"
 dependencies = [
