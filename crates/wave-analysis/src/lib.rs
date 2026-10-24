@@ -6,6 +6,7 @@ pub mod chroma;
 pub mod cqt;
 pub mod resample;
 pub mod spectrum;
+pub mod tempo;
 pub mod testsignal;
 pub mod tuning;
 
