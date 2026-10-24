@@ -2,7 +2,7 @@
 //! templates of the vocabulary, smoothed by Viterbi, with the bass deciding inversions.
 
 use crate::chroma::{Chroma, sync};
-use crate::key::{Key, pitch_name};
+use crate::key::{Key, key_name, pitch_name};
 use crate::tempo::Tempo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -317,4 +317,40 @@ pub fn bar_accuracy(est: &[ChordSegment], truth: &[(f32, f32, Chord)]) -> f32 {
         })
         .count();
     right as f32 / truth.len() as f32
+}
+
+/// Relative keys whose profile scores are this close are decided by the chords.
+const RELATIVE_MARGIN: f32 = 0.1;
+
+/// Seconds spent on the tonic chord of `tonic`/`minor` (major or minor family), the first and last
+/// chords counting three times: songs tend to start and end at home.
+fn tonic_weight(segs: &[ChordSegment], tonic: u8, minor: bool) -> f32 {
+    let is_tonic = |c: &Chord| {
+        c.root == tonic && matches!((minor, c.quality), (false, Quality::Maj | Quality::Dom7 | Quality::Maj7) | (true, Quality::Min | Quality::Min7))
+    };
+    let chorded: Vec<&ChordSegment> = segs.iter().filter(|s| s.chord.is_some()).collect();
+    let n = chorded.len();
+    chorded
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.chord.as_ref().is_some_and(is_tonic))
+        .map(|(i, s)| (s.end - s.start).max(0.0) * if i == 0 || i + 1 == n { 3.0 } else { 1.0 })
+        .sum()
+}
+
+/// `key`, or its relative major/minor when that scored within 0.1 and the chords dwell more on its
+/// tonic (the profile alone cannot tell C major from A minor: same notes).
+pub fn settle_key(key: Key, segs: &[ChordSegment]) -> Key {
+    let (rel_tonic, rel_minor) = if key.minor { ((key.tonic + 3) % 12, false) } else { ((key.tonic + 9) % 12, true) };
+    let rel_name = key_name(rel_tonic, rel_minor);
+    let Some(rel_score) = key.alternatives.iter().find(|a| a.0 == rel_name).map(|a| a.1) else {
+        return key;
+    };
+    if key.confidence - rel_score > RELATIVE_MARGIN || tonic_weight(segs, rel_tonic, rel_minor) <= tonic_weight(segs, key.tonic, key.minor) {
+        return key;
+    }
+    let mut alternatives = vec![(key.name.clone(), key.confidence)];
+    alternatives.extend(key.alternatives.iter().filter(|a| a.0 != rel_name).cloned());
+    alternatives.truncate(3);
+    Key { tonic: rel_tonic, minor: rel_minor, name: rel_name, confidence: rel_score, alternatives }
 }

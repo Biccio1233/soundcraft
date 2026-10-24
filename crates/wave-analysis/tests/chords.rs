@@ -117,3 +117,20 @@ fn silence_is_no_chord() {
     assert!(segs.iter().all(|s| s.chord.is_none()));
     assert!(chords::recognize(&chroma::Chroma::default(), &Tempo::default(), Grid::Bar).is_empty());
 }
+
+#[test]
+fn settle_key_prefers_the_tonic_chord() {
+    let key = |tonic, minor, name: &str, alt: &str| Key { tonic, minor, name: name.into(), confidence: 0.90, alternatives: vec![(alt.into(), 0.85)] };
+    let seg = |s: f32, c: Chord| ChordSegment { start: s, end: s + 2.0, chord: Some(c), confidence: 1.0 };
+    let (am, c, f, g) = (ch(9, Quality::Min), ch(0, Quality::Maj), ch(5, Quality::Maj), ch(7, Quality::Maj));
+    // KK reads the relative major, but the song lives on Am.
+    let minor_song: Vec<ChordSegment> = [am, am, f, c, g, am, f, g, c, am, am].iter().enumerate().map(|(i, x)| seg(i as f32 * 2.0, *x)).collect();
+    let settled = chords::settle_key(key(0, false, "C major", "A minor"), &minor_song);
+    assert_eq!((settled.name.as_str(), settled.tonic, settled.minor), ("A minor", 9, true));
+    assert_eq!(settled.alternatives.first().map(|a| a.0.as_str()), Some("C major"));
+    // A song on C stays in C; a distant runner-up is left alone.
+    let major_song: Vec<ChordSegment> = [c, f, g, c, am, f, g, c].iter().enumerate().map(|(i, x)| seg(i as f32 * 2.0, *x)).collect();
+    assert_eq!(chords::settle_key(key(0, false, "C major", "A minor"), &major_song).name, "C major");
+    let far = Key { alternatives: vec![("A minor".into(), 0.5)], ..key(0, false, "C major", "A minor") };
+    assert_eq!(chords::settle_key(far, &minor_song).name, "C major");
+}

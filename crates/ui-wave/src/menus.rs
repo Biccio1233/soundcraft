@@ -14,6 +14,7 @@ pub enum Dialog {
     LoadPreset,
     SavePrint,
     LoadPrint,
+    LoadLyrics,
     /// The dialog of a restoration effect (the built-in plugin's id).
     Effect(&'static str),
     Stats,
@@ -87,6 +88,8 @@ pub const WAVE_MENUS: &[MenuItem] = &[
     file(RESTORE, "Save Noise Print…", "wave.noise_print_save", None, Dialog::SavePrint),
     file(RESTORE, "Load Noise Print…", "wave.noise_print_load", None, Dialog::LoadPrint),
     item(RESTORE, "Clear Noise Print", "wave.noise_print_clear", "", None),
+    item(&["Analysis"], "Analyze Song", "wave.analyze", "", Some("Cmd+Shift+A")),
+    file(&["Analysis"], "Load Lyrics Text…", "wave.lyrics_set", None, Dialog::LoadLyrics),
     item(&["View"], "Spectral Display", "wave.view_spectral", "", Some("Cmd+Shift+D")),
     file(&["Window"], "Amplitude Statistics…", "wave.stats", None, Dialog::Stats),
 ];
@@ -175,6 +178,11 @@ pub fn invoke(app: &mut WaveApp, m: &MenuItem) {
         }
         Dialog::Effect(plugin) => app.open_effect(plugin, m.command),
         Dialog::Stats => app.open_stats(),
+        Dialog::LoadLyrics => {
+            if let Some(path) = app.services.pick_open.as_ref().and_then(|pick| pick("Load lyrics", &["txt"])) {
+                app.run(m.command, json!({"path": path}));
+            }
+        }
         Dialog::LoadPrint => {
             if let Some(path) = app.services.pick_open.as_ref().and_then(|pick| pick("Load noise print", &["json"])) {
                 app.run(m.command, json!({"path": path}));

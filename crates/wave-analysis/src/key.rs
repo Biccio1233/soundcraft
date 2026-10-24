@@ -25,7 +25,8 @@ pub struct Key {
     pub alternatives: Vec<(String, f32)>,
 }
 
-fn name(tonic: u8, minor: bool) -> String {
+/// "A minor", "Eb major".
+pub fn key_name(tonic: u8, minor: bool) -> String {
     let i = usize::from(tonic % 12);
     if minor { format!("{} minor", MINOR_TONICS[i]) } else { format!("{} major", MAJOR_TONICS[i]) }
 }
@@ -73,8 +74,8 @@ pub fn estimate(profile: &[f32; 12]) -> Option<Key> {
     if confidence <= 0.0 {
         return None;
     }
-    let alternatives = scores.iter().skip(1).take(3).map(|(t, m, s)| (name(*t, *m), *s)).collect();
-    Some(Key { tonic, minor, name: name(tonic, minor), confidence, alternatives })
+    let alternatives = scores.iter().skip(1).take(3).map(|(t, m, s)| (key_name(*t, *m), *s)).collect();
+    Some(Key { tonic, minor, name: key_name(tonic, minor), confidence, alternatives })
 }
 
 /// The name of pitch class `pc` in `key`: flats in flat keys, sharps otherwise (and without a key).

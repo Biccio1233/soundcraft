@@ -3700,6 +3700,7 @@ dependencies = [
  "soundcraft-time",
  "soundcraft-video",
  "soundcraft-vst3-host",
+ "soundcraft-wave-analysis",
  "thiserror 2.0.21",
  "zip",
 ]
