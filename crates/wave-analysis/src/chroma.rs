@@ -11,7 +11,7 @@ const TREBLE_HZ: (f32, f32) = (130.0, 1976.0);
 const BASS_HZ: (f32, f32) = (32.0, 208.0);
 const BASS_OCTAVE_WEIGHTS: [f32; 3] = [1.0, 0.8, 0.6];
 /// Log compression after normalising to the loudest bin of the whole signal.
-const COMPRESSION: f32 = 100.0;
+const COMPRESSION: f32 = 1.0;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Chroma {
