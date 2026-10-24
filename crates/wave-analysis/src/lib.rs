@@ -2,10 +2,12 @@
 //! voicings, lyrics alignment and ChordPro. Audio is mixed to mono and resampled to
 //! [`ANALYSIS_RATE`] once ([`analysis_signal`]); every analysis then runs at that rate.
 
+pub mod chordpro;
 pub mod chords;
 pub mod chroma;
 pub mod cqt;
 pub mod key;
+pub mod lyrics;
 pub mod resample;
 pub mod sections;
 pub mod spectrum;
