@@ -173,6 +173,38 @@ The behaviour reference is an incumbent waveform editor for editing and restorat
 - **Our own plugin names**: Noise Reduction, Adaptive Denoise, Hum Removal, Hiss Reduction, Clip Repair, Reverb Reduction. The `wave.*` command ids follow the owner's spec.
 - **Preview** is the rack. Each restoration dialog has *Add to Rack* (the rack plays live) next to *Apply*; there is no separate preview engine.
 
+## Settled at the start of F2 *(the owner said «vai» to every recommendation on 2026-10-25)*
+
+- **Owner decisions (the spec's stop points):**
+  - **First Whisper model**: `ggml-large-v3-turbo-q5_0.bin` from `ggerganov/whisper.cpp` on Hugging Face, revision `5359861c739e955e79d9a303bcbc70fb988958b1`, 574,041,195 bytes, sha256 `394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2`, MIT. Other sizes are downloaded only when the user picks them.
+  - **HTDemucs**: the third-party export `HRSadeghi/demucs-onnx`, revision `9128f6ee0f1b8e333b5b8d12613aefb3bebc249a`, pinned by sha256, each graph downloaded on first use:
+    - `htdemucs.onnx` (4 stems): 168,683,222 bytes, `abaac48bc8fd55fa672268c8f13228b9b00f52f0c4cd10945048982eca4643bc`;
+    - `htdemucs_6s.onnx` (6 stems): 110,396,023 bytes, `8bf891f10eb208f6fd945f427c8e348ddddef38069d47b8afb7d4aabc24bc15f`.
+    - Licence: the export's code is MIT. Its model card calls the v4 weights non-commercial, but the Demucs LICENSE it links is MIT (Meta's repository and the author's fork), and the export repository's own LICENSE says the weights are MIT. Recorded; irrelevant for personal use.
+  - **ONNX Runtime** comes with `ort` (its default `download-binaries` feature fetches it at build time).
+  - **Lyrics**: always transcribe. Supplied text is aligned word by word to the transcription (no second model) and wins in ChordPro.
+  - **Tempo and transpose**: a rendered preview with Signalsmith Stretch (MIT), re-rendered on each change. The shared player is unchanged.
+- **Models in the code *(calls)*:**
+  - Transcription runs on whisper.cpp through `whisper-rs` (Unlicense; whisper.cpp is MIT; Metal on macOS), not ONNX, because it gives word timestamps out of the box. `ort` runs HTDemucs only.
+  - The engine never links a model runtime. `wave-analysis` (pure Rust) defines a `Models` trait (separate, transcribe, stretch, model status and download). `wave-ml` implements it, and the WaveCraft apps hand it to the engine (`Engine::wave_models`). SoundCraft and the web build do not link ONNX Runtime, whisper.cpp or Signalsmith.
+  - Downloads are explicit. A command that needs a missing model fails with the model's name and size unless it is called with `download: true`, and the app asks first. Files go to `~/Library/Application Support/WaveCraft/models` (`WAVECRAFT_MODELS` overrides it): written to a temporary file, checked by size and sha256, then renamed.
+  - The HTDemucs host side follows the export's contract:
+    - 44.1 kHz stereo (resampled or duplicated as needed), normalised by the mean and standard deviation of the whole file's mono downmix;
+    - 343,980-sample segments with 25 % overlap and a triangular cross-fade;
+    - a "channels as complex" spectrogram (n_fft 4096, hop 1024, the reflect padding and dropped frames of the original);
+    - each stem = waveform branch + ISTFT of the spectral branch.
+- **Analysis *(calls)*:**
+  - Phase A chroma comes from a constant-Q transform (Brown–Puckette sparse spectral kernels, 12 bins per octave centred on the estimated tuning).
+  - Tempo: onset strength (log-spectral flux), autocorrelation with a log-Gaussian tempo prior, then Ellis 2007 dynamic-programming beat tracking. Downbeats come from the periodicity of chord changes and bass onsets. 4/4 is assumed unless `beats_per_bar` is given.
+  - Sections: bar-synchronous chroma and timbre self-similarity, checkerboard novelty, and segment clustering into letters. Names come from position, repetition, loudness and, when a vocal stem exists, vocal presence. The acceptance checks boundaries; names are best effort.
+  - Chord difficulty levels: 1 = major and minor triads, no slash; 2 = adds 7, m7, maj7 and sus; 3 = everything.
+  - Guitar voicings come from our own search over fretboard shapes (standard tuning), scored for open strings, position, fingers, barre and stretch. A capo suggestion minimises the total difficulty. Diagrams travel in ChordPro as `{define}` lines.
+  - ChordPro writes only labels the songwriting corpus reader parses (checked: major, m, 7, maj7, m7, sus2, sus4, dim, aug, slash). "No chord" is never written as a label.
+  - The parity document for this phase is `docs/wavecraft/practice-app-parity.md`, which keeps product names out of the repo.
+- **Two plans**:
+  - **F2a**, analysis without models (pure Rust): tuning, tempo, key, chords, sections, voicings, lyrics alignment, ChordPro, commands, UI and the synthetic acceptance.
+  - **F2b**, models: downloads, stems, transcription, the practice preview, the model acceptance and timings.
+
 ## Limits
 
 - `render_clips` caps at `MAX_RENDER_SAMPLES` (2^29 samples across channels), and `offline` at `MAX_OFFLINE_SAMPLES` (2^28 per channel): about 93 min of stereo at 48 kHz. WaveCraft rejects longer files with a clear error in F0. Chunked processing is F3 work if ever needed.
@@ -184,3 +216,4 @@ The behaviour reference is an incumbent waveform editor for editing and restorat
 |---|---|---|
 | 2026-10-23 | major | First design: scope from the owner's spec + extended F2, decisions of the spec review, architecture grounded in the code |
 | 2026-10-23 | minor | F1 opened: real-take measurement method calibrated on the incumbent's output, defaults must hit the target, `wave.stats`, LSA gain, our plugin names, preview through the rack |
+| 2026-10-25 | minor | F2 opened: owner's model choices (pinned revisions and hashes), whisper.cpp for transcription, `Models` trait keeping runtimes out of the engine, explicit downloads, analysis methods, two plans |
