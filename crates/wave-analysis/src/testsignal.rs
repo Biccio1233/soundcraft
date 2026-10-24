@@ -25,3 +25,14 @@ pub fn note(midi: f32, secs: f32, a4: f32, sr: u32) -> Vec<f32> {
         })
         .collect()
 }
+
+/// The notes `notes` (MIDI) played together.
+pub fn chord(notes: &[f32], secs: f32, a4: f32, sr: u32) -> Vec<f32> {
+    let mut out = vec![0.0f32; (secs.max(0.0) * sr as f32) as usize];
+    for m in notes {
+        for (o, v) in out.iter_mut().zip(note(*m, secs, a4, sr)) {
+            *o += v;
+        }
+    }
+    out
+}
