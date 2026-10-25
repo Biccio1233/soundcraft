@@ -89,15 +89,17 @@ pub fn separate(
         Ok((take(&spec_name)?, take(&wav_name)?))
     };
     let separated = host::separate_with(&stereo, stems, &mut net, progress)?;
+    drop(stereo);
     let back = |x: &[f32]| fit(if sample_rate == RATE { x.to_vec() } else { resample(x, RATE, sample_rate) }, len);
+    // Each 44.1 kHz stem is freed as soon as it is converted.
     Ok(separated
-        .iter()
+        .into_iter()
         .enumerate()
         .map(|(i, [sl, sr])| {
             let channels = if right.is_some() {
-                vec![back(sl), back(sr)]
+                vec![back(&sl), back(&sr)]
             } else {
-                let mono: Vec<f32> = sl.iter().zip(sr).map(|(a, b)| 0.5 * (a + b)).collect();
+                let mono: Vec<f32> = sl.iter().zip(&sr).map(|(a, b)| 0.5 * (a + b)).collect();
                 vec![back(&mono)]
             };
             Stem { name: NAMES.get(i).copied().unwrap_or("other").to_string(), channels }

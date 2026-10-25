@@ -198,11 +198,32 @@ fn separation_model(cmd: &str, p: &Value) -> Result<String> {
     }
 }
 
+/// The longest file separated: the stems are held in memory, and a 6-stem run peaks near 5.5 MB per
+/// second of audio (about 5 GB at the cap).
+const MAX_SEPARATION_S: f64 = 15.0 * 60.0;
+
+/// `frames` at `sample_rate` fit [`MAX_SEPARATION_S`].
+fn separation_length(frames: Samples, sample_rate: u32) -> std::result::Result<(), String> {
+    if sample_rate == 0 {
+        return Err("the file has no sample rate".into());
+    }
+    let seconds = frames as f64 / f64::from(sample_rate);
+    if seconds > MAX_SEPARATION_S {
+        return Err(format!(
+            "the file lasts {:.1} min: stems are separated for files up to {:.0} min (they are held in memory); split it first",
+            seconds / 60.0,
+            MAX_SEPARATION_S / 60.0
+        ));
+    }
+    Ok(())
+}
+
 pub fn separation_job(e: &Engine, p: &Value) -> Result<SeparationJob> {
     const ID: &str = "wave.separate_stems";
     let model = separation_model(ID, p)?;
     let b = backend(e)?;
     let w = wave(e)?;
+    separation_length(file_len(e), w.sample_rate).map_err(|m| bad(ID, m))?;
     let path = w.path.clone().ok_or_else(|| bad(ID, "save the file first: stems are written beside it"))?;
     let file = std::path::Path::new(&path);
     let stem = file.file_stem().and_then(|s| s.to_str()).unwrap_or("audio").to_string();
@@ -743,6 +764,14 @@ mod tests {
         let r = run(&mut e, "wave.cancel_job", json!({}));
         assert_eq!(r["requested"], true);
         assert!(e.wave_cancel, "the app cancels its running job when it sees the request");
+    }
+
+    #[test]
+    fn separation_refuses_files_over_the_cap() {
+        let err = separation_length(901 * 48_000, 48_000).unwrap_err();
+        assert!(err.contains("15 min") && err.contains("15.0"), "{err}");
+        assert!(separation_length(899 * 48_000, 48_000).is_ok());
+        assert!(separation_length(1, 0).is_err());
     }
 
     #[test]
