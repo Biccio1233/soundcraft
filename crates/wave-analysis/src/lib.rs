@@ -1,3 +1,4 @@
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 //! WaveCraft's music analysis, in pure Rust: tuning, tempo, key, chords, sections, guitar
 //! voicings, lyrics alignment and ChordPro. Audio is mixed to mono and resampled to
 //! [`ANALYSIS_RATE`] once ([`analysis_signal`]); every analysis then runs at that rate.

@@ -1,3 +1,4 @@
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 //! WaveCraft's model runtime: checked model downloads, HTDemucs on ONNX Runtime, whisper.cpp
 //! transcription and Signalsmith Stretch, behind the `Models` trait of `soundcraft-wave-analysis`.
 //! Only the WaveCraft apps link this crate; the engine sees the trait.
