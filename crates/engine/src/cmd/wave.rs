@@ -141,6 +141,20 @@ pub fn file_len(e: &Engine) -> Samples {
     e.session().tracks.first().map_or(0, |t| t.clips().iter().map(|c| c.start.saturating_add(c.length)).max().unwrap_or(0))
 }
 
+/// A key of the file's audio as it now sounds (its clips, their gains and fades): it changes with
+/// every edit, comes back with an undo, and never moves with the selection or the view.
+pub fn audio_key(e: &Engine) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    if let Some(t) = e.session().tracks.first() {
+        for c in t.clips() {
+            (c.id.0, c.start, c.length, c.gain_db.to_bits()).hash(&mut h);
+            format!("{:?}{:?}{:?}", c.fade_in, c.fade_out, c.content).hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
 /// The file's samples as they are now: its clips rendered without the mixer, one `Vec` per channel.
 pub fn render_file(e: &Engine) -> Result<Vec<Vec<f32>>> {
     let t = wave_track(e)?;

@@ -24,12 +24,29 @@ pub struct Song {
     pub bar_s: f32,
 }
 
+/// A lyric word with the chords that start on it, at character offsets (0 = before the word).
+struct Token {
+    word: String,
+    chords: Vec<(usize, String)>,
+}
+
 enum Item {
     Start(SectionLabel),
     EndChorus,
-    /// Words, each with the chord written in front of it.
-    Lyric(Vec<(Option<String>, String)>),
+    Lyric(Vec<Token>),
     Chords(Vec<String>),
+}
+
+/// Text that ChordPro must not read as a chord or a directive: brackets and braces become parentheses
+/// (one character for one, so chord offsets stay valid).
+fn plain(text: &str) -> String {
+    text.chars()
+        .map(|c| match c {
+            '[' | '{' => '(',
+            ']' | '}' => ')',
+            c => c,
+        })
+        .collect()
 }
 
 fn title_case(label: SectionLabel) -> String {
@@ -107,12 +124,14 @@ fn items(song: &Song) -> Vec<Item> {
         let start = song.chords.first().map_or(0.0, |c| c.0);
         chord_lines(song, start, end, true, &mut timed);
     } else {
-        let mut prev_last: Option<f32> = None;
+        // Where the previous line stops taking chord changes (the end of its last word).
+        let mut prev_cut: Option<f32> = None;
         for line in &lines {
             let first = line.words[0].start;
-            let last = line.words.last().map_or(first, |w| w.start);
+            let last_word = line.words.last().map_or((first, first), |w| (w.start, w.end));
+            let cut = (last_word.0 + TOL_S).max(last_word.1);
             // The changes since the previous line, before this one starts.
-            let gap_from = prev_last.map_or(f32::NEG_INFINITY, |p| p + TOL_S);
+            let gap_from = prev_cut.unwrap_or(f32::NEG_INFINITY);
             let mut gap_to = first - TOL_S + 1e-3;
             // The last change before the line is written at the line's start instead, unless a
             // section boundary lies between them.
@@ -124,26 +143,40 @@ fn items(song: &Song) -> Vec<Item> {
             }
             if all.iter().any(|(t, _)| *t > gap_from && *t < gap_to) {
                 let from = all.iter().map(|c| c.0).filter(|t| *t > gap_from).fold(f32::INFINITY, f32::min);
-                chord_lines(song, from, gap_to, prev_last.is_none(), &mut timed);
+                chord_lines(song, from, gap_to, prev_cut.is_none(), &mut timed);
             }
-            let mut tokens: Vec<(Option<String>, String)> = line.words.iter().map(|w| (None, w.text.clone())).collect();
-            if let Some(first_tok) = tokens.first_mut() {
-                first_tok.0 = active(song, first);
+            let mut tokens: Vec<Token> = line.words.iter().map(|w| Token { word: w.text.clone(), chords: Vec::new() }).collect();
+            if let (Some(tok), Some(a)) = (tokens.first_mut(), active(song, first)) {
+                tok.chords.push((0, a));
             }
-            for (t, label) in all.iter().filter(|(t, _)| *t > first + TOL_S && *t <= last + TOL_S) {
-                if let Some(i) = line.words.iter().position(|w| w.start >= t - TOL_S)
-                    && let Some(tok) = tokens.get_mut(i)
+            for (t, label) in all.iter().filter(|(t, _)| *t > first + TOL_S && *t <= cut) {
+                let next = line.words.iter().position(|w| w.start >= t - TOL_S);
+                let held = next.unwrap_or(line.words.len()).checked_sub(1);
+                // A change while a word is still sounding goes inside that word, never lost.
+                if let Some(i) = held
+                    && let Some(w) = line.words.get(i)
+                    && w.end > t + TOL_S
                 {
-                    tok.0 = Some(label.clone());
+                    let chars = w.text.chars().count();
+                    let frac = ((t - w.start) / (w.end - w.start).max(1e-3)).clamp(0.0, 1.0);
+                    let at = if chars <= 1 { chars } else { ((frac * chars as f32) as usize).clamp(1, chars - 1) };
+                    if let Some(tok) = tokens.get_mut(i) {
+                        tok.chords.push((at, label.clone()));
+                    }
+                } else if let Some(tok) = next.and_then(|j| tokens.get_mut(j)) {
+                    tok.chords.push((0, label.clone()));
+                } else if let Some(tok) = tokens.last_mut() {
+                    let end = tok.word.chars().count();
+                    tok.chords.push((end, label.clone()));
                 }
             }
             timed.push((first, Item::Lyric(tokens)));
-            prev_last = Some(last);
+            prev_cut = Some(cut);
         }
-        if let Some(p) = prev_last
-            && all.iter().any(|(t, _)| *t > p + TOL_S)
+        if let Some(p) = prev_cut
+            && all.iter().any(|(t, _)| *t > p)
         {
-            let from = all.iter().map(|c| c.0).filter(|t| *t > p + TOL_S).fold(f32::INFINITY, f32::min);
+            let from = all.iter().map(|c| c.0).filter(|t| *t > p).fold(f32::INFINITY, f32::min);
             chord_lines(song, from, end, false, &mut timed);
         }
     }
@@ -184,7 +217,7 @@ fn tempo_text(bpm: f32) -> String {
 pub fn render_cho(song: &Song) -> String {
     let mut out = String::new();
     if !song.title.is_empty() {
-        out.push_str(&format!("{{title: {}}}\n", song.title));
+        out.push_str(&format!("{{title: {}}}\n", plain(&song.title)));
     }
     if let Some(k) = &song.key {
         out.push_str(&format!("{{key: {k}}}\n"));
@@ -206,7 +239,22 @@ pub fn render_cho(song: &Song) -> String {
             Item::Start(label) => out.push_str(&format!("{{c: {}}}\n", title_case(label))),
             Item::EndChorus => out.push_str("{eoc}\n"),
             Item::Lyric(tokens) => {
-                let words: Vec<String> = tokens.iter().map(|(c, w)| c.as_ref().map_or_else(|| w.clone(), |c| format!("[{c}]{w}"))).collect();
+                let words: Vec<String> = tokens
+                    .iter()
+                    .map(|tok| {
+                        let word: Vec<char> = plain(&tok.word).chars().collect();
+                        let mut w = String::new();
+                        for k in 0..=word.len() {
+                            for (_, c) in tok.chords.iter().filter(|(at, _)| *at == k || (k == word.len() && *at > k)) {
+                                w.push_str(&format!("[{c}]"));
+                            }
+                            if let Some(ch) = word.get(k) {
+                                w.push(*ch);
+                            }
+                        }
+                        w
+                    })
+                    .collect();
                 out.push_str(&words.join(" "));
                 out.push('\n');
             }
@@ -248,19 +296,20 @@ pub fn render_txt(song: &Song) -> String {
             Item::EndChorus => {}
             Item::Lyric(tokens) => {
                 let (mut chords, mut words) = (String::new(), String::new());
-                for (chord, word) in &tokens {
+                for tok in &tokens {
                     if !words.is_empty() {
                         words.push(' ');
                     }
                     let col = words.chars().count();
-                    if let Some(c) = chord {
-                        // At the word's column, or one space after a chord that runs past it.
+                    for (at, c) in &tok.chords {
+                        // At the word's column (plus the offset), or one space after a chord that runs past it.
+                        let want = col + at;
                         let have = chords.chars().count();
-                        let pad = if have == 0 || have < col { col - have } else { 1 };
+                        let pad = if have == 0 || have < want { want - have } else { 1 };
                         chords.push_str(&" ".repeat(pad));
                         chords.push_str(c);
                     }
-                    words.push_str(word);
+                    words.push_str(&tok.word);
                 }
                 if !chords.is_empty() {
                     out.push_str(chords.trim_end());

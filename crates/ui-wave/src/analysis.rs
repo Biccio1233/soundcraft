@@ -30,7 +30,8 @@ pub struct Lanes {
     pub sections: Vec<(f64, f64, String, char)>,
 }
 
-type CacheKey = (u64, u64, i64, i64, usize, usize, usize, u8, Option<u8>);
+/// Audio, range, grid, chord count, lyrics version, level, capo.
+type CacheKey = (u64, i64, i64, &'static str, usize, u64, u8, Option<u8>);
 
 /// What the windows show, computed once per analysis, lyrics, level and capo.
 struct Cache {
@@ -61,7 +62,7 @@ impl Default for View {
 /// The analysis the screen can show: present, not stale.
 fn current(app: &WaveApp) -> Option<&Analysis> {
     let a = app.engine.wave.as_ref()?.analysis.as_ref()?;
-    (a.revision == app.engine.revision).then_some(a)
+    (a.audio == soundcraft_engine::cmd::wave::audio_key(&app.engine)).then_some(a)
 }
 
 fn grid_name(g: Grid) -> &'static str {
@@ -100,9 +101,8 @@ fn refresh(app: &mut WaveApp) {
         app.analysis.cache = None;
         return;
     };
-    let lyrics = app.engine.wave.as_ref().map_or((0, 0), |w| (w.lyrics.heard.len(), w.lyrics.lines.len()));
-    let key: CacheKey =
-        (app.engine.revision, a.revision, a.range.start, a.range.end, a.chords.len(), lyrics.0, lyrics.1, app.analysis.level, app.analysis.capo);
+    let lyrics = app.engine.wave.as_ref().map_or(0, |w| w.lyrics.version);
+    let key: CacheKey = (a.audio, a.range.start, a.range.end, grid_name(a.grid), a.chords.len(), lyrics, app.analysis.level, app.analysis.capo);
     if app.analysis.cache.as_ref().is_some_and(|c| c.key == key) {
         return;
     }
@@ -273,12 +273,16 @@ fn now_s(app: &WaveApp) -> f64 {
     at as f64 / sr
 }
 
-/// The Chords & Lyrics and Chord Diagrams windows, when open.
+/// The Chords & Lyrics and Chord Diagrams windows, when open. The shared cache (which also gives
+/// the lanes their capo) is refreshed whenever an analysis is on screen.
 pub fn windows(ctx: &egui::Context, app: &mut WaveApp) {
+    let lanes_on = app.engine.wave.as_ref().is_some_and(|w| w.show_analysis);
+    if lanes_on || app.analysis.lyrics_open || app.analysis.diagrams_open {
+        refresh(app);
+    }
     if !app.analysis.lyrics_open && !app.analysis.diagrams_open {
         return;
     }
-    refresh(app);
     let t = Tokens::current();
     let resolved = app.analysis.cache.as_ref().map_or(0, |c| c.capo);
     let analysed = app.analysis.cache.is_some();

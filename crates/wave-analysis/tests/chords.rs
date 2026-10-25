@@ -134,3 +134,18 @@ fn settle_key_prefers_the_tonic_chord() {
     let far = Key { alternatives: vec![("A minor".into(), 0.5)], ..key(0, false, "C major", "A minor") };
     assert_eq!(chords::settle_key(far, &minor_song).name, "C major");
 }
+
+#[test]
+fn drums_and_noise_are_no_chord() {
+    let (x, _) = drums(100.0, 6, 4, SR);
+    let c = chroma::compute(&x, SR, 0.0);
+    let t = tempo::analyze(&x, SR, Some(&c), None);
+    for grid in [Grid::Free, Grid::Bar] {
+        let segs = chords::recognize(&c, &t, grid);
+        assert!(segs.iter().all(|s| s.chord.is_none()), "drums {grid:?}: {segs:?}");
+    }
+    let noise = soundcraft_wave_analysis::testsignal::noise(5 * SR as usize, 99);
+    let c = chroma::compute(&noise, SR, 0.0);
+    let segs = chords::recognize(&c, &Tempo::default(), Grid::Free);
+    assert!(segs.iter().all(|s| s.chord.is_none()), "noise: {segs:?}");
+}

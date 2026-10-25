@@ -350,6 +350,11 @@ impl WaveApp {
         analysis::windows(&ctx, self);
     }
 
+    /// The analysis level, capo and windows.
+    pub fn analysis_view_mut(&mut self) -> &mut analysis::View {
+        &mut self.analysis
+    }
+
     /// The beat, chord and section lanes the editor shows, if any.
     pub fn analysis_lanes(&self) -> Option<analysis::Lanes> {
         analysis::lanes(self)

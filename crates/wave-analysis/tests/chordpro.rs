@@ -31,7 +31,7 @@ fn two_lines() -> Vec<Line> {
 #[test]
 fn align_transfers_times_and_fills_gaps() {
     let heard = [w("chiusa", 0.0, 0.5), w("vive", 0.5, 1.0), w("dentro", 1.0, 1.5), w("me", 2.0, 2.5)];
-    let lines = lyrics::align("Chiusa, vive\ndentro di me", &heard);
+    let lines = lyrics::align("Chiusa, vive\ndentro di me", &heard, 10.0);
     assert_eq!(lines.len(), 2);
     assert_eq!(lines[0].words[0].text, "Chiusa,");
     assert_eq!((lines[0].words[0].start, lines[0].words[0].end), (0.0, 0.5));
@@ -44,7 +44,7 @@ fn align_transfers_times_and_fills_gaps() {
 #[test]
 fn align_tolerates_misheard_words() {
     let heard = [w("chiusa", 0.0, 0.5), w("vivi", 0.5, 1.0)];
-    let lines = lyrics::align("Chiusa vive", &heard);
+    let lines = lyrics::align("Chiusa vive", &heard, 10.0);
     assert_eq!((lines[0].words[1].start, lines[0].words[1].end), (0.5, 1.0));
 }
 
@@ -52,18 +52,34 @@ fn align_tolerates_misheard_words() {
 fn align_without_overlap_is_monotone() {
     let heard = [w("a", 0.0, 0.5), w("b", 1.0, 1.5)];
     for text in ["x y z w q", "x", "uno due\ntre quattro cinque sei sette"] {
-        let lines = lyrics::align(text, &heard);
+        let lines = lyrics::align(text, &heard, 3.0);
         let words: Vec<&Word> = lines.iter().flat_map(|l| &l.words).collect();
         assert_eq!(words.len(), text.split_whitespace().count());
-        let extra = words.len() as f32 * 0.3;
         for p in words.windows(2) {
             assert!(p[1].start >= p[0].start && p[0].end >= p[0].start, "{p:?}");
         }
-        assert!(words.iter().all(|x| x.start >= 0.0 && x.end <= 1.5 + extra + 1e-4), "{words:?}");
+        // No shared word: spread over the heard span.
+        assert!(words.iter().all(|x| x.start >= 0.0 && x.end <= 1.5 + 1e-4), "{words:?}");
     }
-    assert!(lyrics::align("", &heard).is_empty());
-    let alone = lyrics::align("solo due", &[]);
+    assert!(lyrics::align("", &heard, 3.0).is_empty());
+    let alone = lyrics::align("solo due", &[], 3.0);
     assert_eq!(alone[0].words[1].start, 0.3);
+}
+
+#[test]
+fn align_stays_inside_the_file() {
+    // 61 s file, words heard at 50–53 s; a long text with and without shared words.
+    let heard: Vec<Word> =
+        ["luce", "nuova", "sopra", "il", "mare"].iter().enumerate().map(|(i, t)| w(t, 50.0 + i as f32 * 0.6, 50.5 + i as f32 * 0.6)).collect();
+    let unrelated: String = (0..320).map(|i| format!("parola{i} ")).collect();
+    let overlap = format!("{unrelated}\nluce nuova sopra il mare\n{unrelated}");
+    for text in [unrelated.as_str(), overlap.as_str()] {
+        let words: Vec<Word> = lyrics::align(text, &heard, 61.0).into_iter().flat_map(|l| l.words).collect();
+        assert!(words.iter().all(|x| x.start >= 0.0 && x.end <= 61.0 + 1e-3), "last word ends at {:?}", words.last().map(|x| x.end));
+        for p in words.windows(2) {
+            assert!(p[1].start >= p[0].start);
+        }
+    }
 }
 
 #[test]
@@ -154,4 +170,34 @@ fn early_changes_still_group_by_bar() {
         times.iter().zip(labels).enumerate().map(|(i, (t, l))| (*t, times.get(i + 1).copied().unwrap_or(14.9), l)).collect();
     let s = song(vec![], &chords);
     assert!(chordpro::render_cho(&s).ends_with("\n[C] [G] [Am] [F]\n[C] [G]\n"), "{}", chordpro::render_cho(&s));
+}
+
+#[test]
+fn section_tags_and_brackets_never_become_chords() {
+    let heard = [w("luce", 0.0, 0.5), w("nuova", 0.6, 1.0)];
+    let lines = lyrics::align("[Chorus]\nLuce {nuova}", &heard, 5.0);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let mut s = song(lines, &[(0.0, 2.0, "Am")]);
+    s.title = "A}b [x]".into();
+    let cho = chordpro::render_cho(&s);
+    assert!(cho.contains("{title: A)b (x)}"), "{cho}");
+    assert!(cho.contains("[Am]Luce (nuova)"), "{cho}");
+    let labels: Vec<&str> =
+        cho.lines().filter(|l| !l.starts_with('{')).flat_map(|l| l.split('[').skip(1).filter_map(|p| p.split_once(']').map(|x| x.0))).collect();
+    assert_eq!(labels, ["Am"]);
+}
+
+#[test]
+fn chord_change_in_a_held_word_is_kept() {
+    let line = Line { words: vec![w("io", 0.0, 0.4), w("amoooore", 0.5, 4.0), w("te", 4.5, 5.0)] };
+    let s = song(vec![line], &[(0.0, 2.0, "C"), (2.0, 4.0, "F"), (4.0, 6.0, "G")]);
+    assert!(chordpro::render_cho(&s).ends_with("[C]io amo[F]ooore [G]te\n"), "{}", chordpro::render_cho(&s));
+    let txt = chordpro::render_txt(&s);
+    let lines: Vec<&str> = txt.lines().collect();
+    let i = lines.iter().position(|l| l.starts_with("io")).expect("lyric line");
+    assert_eq!(lines[i - 1].find('F'), Some(lines[i].find("amo").unwrap() + 3), "{txt}");
+    // Two changes before one word are both written.
+    let two = Line { words: vec![w("uno", 0.0, 0.5), w("due", 3.0, 3.5)] };
+    let s = song(vec![two], &[(0.0, 1.0, "C"), (1.0, 2.0, "F"), (2.0, 4.0, "G")]);
+    assert!(chordpro::render_cho(&s).ends_with("[C]uno [F][G]due\n"), "{}", chordpro::render_cho(&s));
 }

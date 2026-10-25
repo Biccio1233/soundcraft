@@ -352,3 +352,64 @@ fn diagram_window_draws_every_quality() {
         h.run();
     }
 }
+
+#[test]
+fn click_keeps_the_lanes() {
+    let mut h = harness(song_opened("analysis_click_keeps"));
+    menu(&mut h, "Analyze Song");
+    assert!(h.state().analysis_lanes().is_some());
+    let tl = h.state().timeline_rect();
+    let at = pos2(tl.min.x + tl.width() * 0.3, tl.center().y);
+    let press = |pressed: bool| Event::PointerButton { pos: at, button: PointerButton::Primary, pressed, modifiers: Modifiers::default() };
+    h.input_mut().events.push(Event::PointerMoved(at));
+    h.step();
+    h.input_mut().events.push(press(true));
+    h.step();
+    h.input_mut().events.push(press(false));
+    h.run();
+    assert!(h.state().engine.session().edit.selection.start > 0, "the click placed the cursor");
+    assert!(h.state().analysis_lanes().is_some(), "lanes gone after a click");
+}
+
+#[test]
+fn reloaded_lyrics_update_the_window() {
+    let mut e = song_opened("analysis_lyrics_reload");
+    let words = json!([{"word": "uno", "start": 5.1, "end": 5.6}, {"word": "due", "start": 5.7, "end": 6.2}]);
+    e.execute("wave.lyrics_set", &json!({"words": words})).unwrap();
+    e.execute("wave.lyrics_set", &json!({"text": "Uno due"})).unwrap();
+    let mut h = harness(e);
+    menu(&mut h, "Chords & Lyrics…");
+    assert!(h.query_all_by_label_contains("Uno due").next().is_some());
+    exec(&mut h, "wave.lyrics_set", json!({"text": "Una dote"}));
+    h.run();
+    assert!(h.query_all_by_label_contains("Una dote").next().is_some(), "the window kept the old text");
+}
+
+#[test]
+fn lanes_use_the_suggested_capo() {
+    use soundcraft_wave_analysis::chords::{Chord, Quality};
+    use soundcraft_wave_analysis::sections::SectionLabel;
+    use soundcraft_wave_analysis::testsignal::{SongSpec, acceptance_song, song};
+    let c = |root, quality| Chord { root, quality, bass: None };
+    let prog = [c(3, Quality::Maj), c(8, Quality::Maj), c(10, Quality::Maj), c(0, Quality::Min)];
+    let spec = SongSpec {
+        sections: vec![(SectionLabel::Verse, prog.iter().cycle().take(12).copied().collect())],
+        key: "Eb major".into(),
+        ..acceptance_song()
+    };
+    let (channels, _) = song(&spec);
+    let dir = std::env::temp_dir().join("wavecraft-ui-tests").join("analysis_capo_lanes");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("eb.wav");
+    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+    std::fs::write(&path, soundcraft_audio_io::encode(&AudioBuffer { sample_rate: spec.sample_rate, channels }, &opts).unwrap()).unwrap();
+    let mut e = Engine::default();
+    e.execute("wave.open", &json!({"path": path.to_str().unwrap()})).unwrap();
+    let mut h = harness(e);
+    menu(&mut h, "Analyze Song");
+    h.state_mut().analysis_view_mut().capo = None;
+    h.run();
+    let lanes = h.state().analysis_lanes().expect("lanes");
+    assert!(!lanes.chords.iter().any(|c| c.2.starts_with("Eb")), "lanes not shown as capo shapes: {:?}", lanes.chords);
+}

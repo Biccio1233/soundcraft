@@ -19,6 +19,8 @@ const COMPRESSION: f32 = 100.0;
 const BAND_LO_HZ: f32 = 30.0;
 const BAND_HI_HZ: f32 = 10_000.0;
 const MIN_SECONDS: f32 = 2.0;
+/// Below this raw onset strength there is no beat to find (a held note, a drone).
+const MIN_ONSET_STRENGTH: f32 = 2.0;
 /// Estimates below this tempo are doubled when their half-beats are strong (see `midpoint_ratio`).
 const DOUBLE_BELOW_BPM: f32 = 100.0;
 const DOUBLE_RATIO: f32 = 0.5;
@@ -39,6 +41,8 @@ struct Onsets {
     full: Vec<f32>,
     low: Vec<f32>,
     fps: f32,
+    /// The 99th percentile of the raw flux.
+    strength: f32,
 }
 
 fn hop_for(sr: u32) -> usize {
@@ -113,9 +117,14 @@ fn onsets(x: &[f32], sr: u32) -> Onsets {
         low.push(l);
         prev = Some(logm);
     }
+    // How strong the onsets are before normalising: a held tone only ripples (≈ 0.5 here), drums
+    // and played music reach 15–30.
+    let mut sorted = full.clone();
+    sorted.sort_by(f32::total_cmp);
+    let strength = sorted.get(sorted.len().saturating_sub(1) * 99 / 100).copied().unwrap_or(0.0);
     normalise(&mut full, fps);
     normalise(&mut low, fps);
-    Onsets { full, low, fps }
+    Onsets { full, low, fps, strength }
 }
 
 /// The onset-strength envelope of `x` (at `sr`) and its frame rate.
@@ -236,6 +245,9 @@ pub fn analyze(x: &[f32], sr: u32, chroma: Option<&Chroma>, beats_per_bar: Optio
         return none;
     }
     let o = onsets(x, sr);
+    if o.strength < MIN_ONSET_STRENGTH {
+        return none;
+    }
     let Some((period, confidence)) = global_period(&o.full, o.fps) else {
         return none;
     };

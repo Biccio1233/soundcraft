@@ -169,6 +169,16 @@ const HARMONIC_THIRD: f32 = 0.129_6;
 /// Emission scale and per-change penalties of the Viterbi path, per grid.
 const BETA: f32 = 10.0;
 const NO_CHORD_ENERGY: f32 = 0.05;
+/// The no-chord state's score where there is sound: a chord must fit better than this. Frame fits
+/// of drums alone or speech reach 0.69; averaging over a beat or a bar lifts every fit (pitched
+/// drums reach 0.77), while real chords fit 0.71–0.96 per bar (two covers and a rehearsal take, 10 %
+/// under 0.83).
+fn no_chord_score(grid: Grid) -> f32 {
+    match grid {
+        Grid::Free => 0.74,
+        Grid::Beat | Grid::Bar => 0.78,
+    }
+}
 /// Bonus for a chord whose root is the strongest bass note: it separates chords sharing their notes
 /// (Csus2 = Gsus4 without the bass).
 const BASS_ROOT_BONUS: f32 = 0.05;
@@ -235,12 +245,13 @@ pub fn recognize(c: &Chroma, tempo: &Tempo, grid: Grid) -> Vec<ChordSegment> {
     let median = energies.get(energies.len() / 2).copied().unwrap_or(0.0);
     let floor = (NO_CHORD_ENERGY * median).max(1e-6);
     let tpl = templates();
+    let no_chord = no_chord_score(grid);
     let states = tpl.len() + 1; // the last state is "no chord"
     let none = tpl.len();
     let emission = |o: &([f32; 12], [f32; 12], f32), s: usize| -> f32 {
         let quiet = o.2 <= floor;
         if s == none {
-            return if quiet { 1.0 } else { 0.0 };
+            return if quiet { 1.0 } else { no_chord };
         }
         if quiet {
             return 0.0;

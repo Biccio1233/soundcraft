@@ -66,3 +66,17 @@ fn silence_has_no_tempo() {
     let (env, fps) = tempo::onset_envelope(&x, SR);
     assert!(!env.is_empty() && (fps - SR as f32 / 220.0).abs() < 0.01);
 }
+
+#[test]
+fn steady_tone_has_no_tempo() {
+    // A held A3 with steady harmonics: no onsets, so no beat however regular the ripple.
+    let x: Vec<f32> = (0..10 * SR as usize)
+        .map(|i| {
+            let t = i as f32 / SR as f32;
+            (1..=6).map(|k| 0.1 / k as f32 * (std::f32::consts::TAU * 220.0 * k as f32 * t).sin()).sum::<f32>()
+        })
+        .collect();
+    let t = tempo::analyze(&x, SR, None, None);
+    assert_eq!(t.bpm, 0.0, "bpm {} confidence {}", t.bpm, t.confidence);
+    assert!(t.beats.is_empty());
+}

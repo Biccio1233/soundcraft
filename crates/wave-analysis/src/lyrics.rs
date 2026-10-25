@@ -3,7 +3,7 @@
 /// Seconds given to a supplied word with no heard neighbour to borrow time from.
 const WORD_S: f32 = 0.3;
 const MATCH_AT: f32 = 0.5;
-/// Larger alignments fall back to spreading the words over the heard span.
+/// Larger alignments skip the matching: the words are spread over the heard span.
 const MAX_CELLS: usize = 16_000_000;
 const LINE_GAP_S: f32 = 0.8;
 const LINE_WORDS: usize = 12;
@@ -99,11 +99,21 @@ fn matches(supplied: &[Vec<char>], heard: &[Vec<char>]) -> Vec<Option<usize>> {
     out
 }
 
-/// The supplied text's lines and words (punctuation kept for display), timed from `heard`: matched
-/// words copy the heard times; the others share the time between their matched neighbours by
-/// length, or take 0.3 s each before the first and after the last match. Times never go back.
-pub fn align(supplied: &str, heard: &[Word]) -> Vec<Line> {
-    let lines: Vec<Vec<&str>> = supplied.lines().map(|l| l.split_whitespace().collect::<Vec<_>>()).filter(|l| !l.is_empty()).collect();
+/// A pasted section tag (`[Chorus]`, `[Verse 2]`) or ChordPro directive (`{soc}`): not lyrics.
+fn is_tag(line: &str) -> bool {
+    let t = line.trim();
+    (t.starts_with('[') && t.ends_with(']')) || (t.starts_with('{') && t.ends_with('}'))
+}
+
+/// The supplied text's lines and words (punctuation kept for display), timed from `heard` and kept
+/// inside `[0, end_s]`: matched words copy the heard times; the others share the time between their
+/// matched neighbours by length, or take up to 0.3 s each before the first and after the last match
+/// (less when the file ends sooner). With no word in common the words are spread over the heard
+/// span. Section-tag lines are dropped. Times never go back.
+pub fn align(supplied: &str, heard: &[Word], end_s: f32) -> Vec<Line> {
+    let end_s = if end_s.is_finite() { end_s.max(0.0) } else { 0.0 };
+    let lines: Vec<Vec<&str>> =
+        supplied.lines().filter(|l| !is_tag(l)).map(|l| l.split_whitespace().collect::<Vec<_>>()).filter(|l| !l.is_empty()).collect();
     let flat: Vec<&str> = lines.iter().flatten().copied().collect();
     if flat.is_empty() {
         return Vec::new();
@@ -119,14 +129,28 @@ pub fn align(supplied: &str, heard: &[Word]) -> Vec<Line> {
     }
     let matched: Vec<usize> = (0..flat.len()).filter(|i| m[*i].is_some()).collect();
     let weight = |i: usize| norm_s[i].len().max(1) as f32 + 1.0;
-    // Before the first match: 0.3 s per word, ending where it starts (from the first heard word without one).
-    let first_start = matched.first().map_or_else(|| heard.first().map_or(0.0, |w| w.start.max(0.0)), |f| times[*f].0);
-    let lead = matched.first().copied().unwrap_or(flat.len());
-    let mut t = if matched.is_empty() { first_start } else { (first_start - WORD_S * lead as f32).max(0.0) };
-    let step = if matched.is_empty() { WORD_S } else { ((first_start - t) / lead.max(1) as f32).min(WORD_S) };
-    for slot in times.iter_mut().take(lead) {
-        *slot = (t, t + step);
-        t += step;
+    let n = flat.len();
+    if matched.is_empty() {
+        // Nothing in common: spread the words over the heard span (0.3 s each without one).
+        let (from, to) = match (heard.iter().map(|w| w.start).reduce(f32::min), heard.iter().map(|w| w.end).reduce(f32::max)) {
+            (Some(a), Some(b)) if b > a => (a.max(0.0), b),
+            _ => (0.0, WORD_S * n as f32),
+        };
+        let step = (to - from) / n as f32;
+        for (i, slot) in times.iter_mut().enumerate() {
+            let t = from + step * i as f32;
+            *slot = (t, t + step);
+        }
+    }
+    // Before the first match: up to 0.3 s per word, ending where it starts.
+    if let Some(&lead) = matched.first() {
+        let first_start = times[lead].0;
+        let mut t = (first_start - WORD_S * lead as f32).max(0.0);
+        let step = ((first_start - t) / lead.max(1) as f32).min(WORD_S);
+        for slot in times.iter_mut().take(lead) {
+            *slot = (t, t + step);
+            t += step;
+        }
     }
     // Between matches: share the gap by word length.
     for pair in matched.windows(2) {
@@ -143,19 +167,21 @@ pub fn align(supplied: &str, heard: &[Word]) -> Vec<Line> {
             t += d;
         }
     }
-    // After the last match: 0.3 s per word.
+    // After the last match: up to 0.3 s per word, before the file ends.
     if let Some(&last) = matched.last() {
         let mut t = times[last].1;
+        let rest = n - last - 1;
+        let step = if rest > 0 { ((end_s - t) / rest as f32).clamp(0.0, WORD_S) } else { 0.0 };
         for slot in times.iter_mut().skip(last + 1) {
-            *slot = (t, t + WORD_S);
-            t += WORD_S;
+            *slot = (t, t + step);
+            t += step;
         }
     }
-    // Never go back.
+    // Never go back, never past the end.
     let mut floor = 0.0f32;
     for (s, e) in times.iter_mut() {
-        *s = s.max(floor);
-        *e = e.max(*s);
+        *s = s.max(floor).min(end_s);
+        *e = e.max(*s).min(end_s);
         floor = *s;
     }
     let mut out = Vec::with_capacity(lines.len());

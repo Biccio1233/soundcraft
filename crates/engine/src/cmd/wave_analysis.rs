@@ -1,8 +1,8 @@
 //! WaveCraft music analysis: tuning, tempo, key, chords, sections, guitar diagrams, lyrics and
 //! ChordPro, over the selection or the whole file. Results are cached in the open file (keyed by
-//! revision and range) and are never undo steps.
+//! audio and range: selecting or zooming keeps it) and are never undo steps.
 
-use super::wave::{has_file, render_file, wave, wave_range};
+use super::wave::{audio_key, has_file, render_file, wave, wave_range};
 use super::*;
 use crate::{cmd, io};
 use serde_json::json;
@@ -26,7 +26,8 @@ const NO_WORDS: &str = "transcribe first (wave.transcribe) or pass timed words";
 /// (`offset_s` seconds into the file); the commands report file times.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Analysis {
-    pub revision: u64,
+    /// The file's [`audio_key`] when analysed: the analysis is stale once the audio differs.
+    pub audio: u64,
     pub range: Range,
     pub offset_s: f64,
     pub grid: Grid,
@@ -44,6 +45,8 @@ pub struct Analysis {
 pub struct Lyrics {
     pub heard: Vec<Word>,
     pub lines: Vec<Line>,
+    /// Bumped on every change, so views know when to redraw.
+    pub version: u64,
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -120,9 +123,11 @@ pub fn specs() -> Vec<CommandSpec> {
     ]
 }
 
-fn grid_param(cmd: &str, p: &Value) -> Result<Grid> {
+/// `grid`, or without it the grid of the analysis already made (bar for a first one).
+fn grid_param(cmd: &str, p: &Value, cached: Option<Grid>) -> Result<Grid> {
     match str_param(p, "grid") {
-        None | Some("bar") => Ok(Grid::Bar),
+        None => Ok(cached.unwrap_or(Grid::Bar)),
+        Some("bar") => Ok(Grid::Bar),
         Some("beat") => Ok(Grid::Beat),
         Some("free") => Ok(Grid::Free),
         Some(other) => Err(bad(cmd, format!("`grid` must be beat, bar or free, not `{other}`"))),
@@ -154,25 +159,36 @@ fn capo_param(cmd: &str, p: &Value, auto: bool) -> Result<Option<u8>> {
 }
 
 /// Make sure the open file has an analysis of the command's range at its grid and bar length.
+/// Only `wave.analyze` follows the selection: the other commands keep the analysis already made
+/// (while the audio is unchanged) unless they name `start`/`end`.
 fn ensure(e: &mut Engine, cmd: &str, p: &Value) -> Result<()> {
-    let range = wave_range(e, cmd, p)?;
+    let explicit = ["start", "end", "length"].iter().any(|k| p.get(k).is_some());
+    let audio = audio_key(e);
+    let kept = wave(e)?.analysis.as_ref().filter(|a| a.audio == audio).map(|a| a.range);
+    let range = match kept {
+        Some(r) if !explicit && cmd != "wave.analyze" => r,
+        _ => wave_range(e, cmd, p)?,
+    };
     if range.is_empty() {
         return Err(bad(cmd, "the range is empty"));
     }
-    let grid = grid_param(cmd, p)?;
-    let bpb = int_param(cmd, p, "beats_per_bar", 2..=7)?.map(|v| v as u8);
-    let revision = e.revision;
     let w = wave(e)?;
-    if let Some(a) = &w.analysis
-        && a.revision == revision
-        && a.range == range
+    let fresh = w.analysis.as_ref().filter(|a| a.audio == audio && a.range == range);
+    let grid = grid_param(cmd, p, fresh.map(|a| a.grid))?;
+    let bpb = match int_param(cmd, p, "beats_per_bar", 2..=7)? {
+        Some(v) => Some(v as u8),
+        None => fresh.and_then(|a| a.beats_per_bar),
+    };
+    if let Some(a) = fresh
         && a.beats_per_bar == bpb
     {
         if a.grid != grid {
             let chords = soundcraft_wave_analysis::chords::recognize(&a.chroma, &a.tempo, grid);
+            let key = a.key.clone().map(|k| soundcraft_wave_analysis::chords::settle_key(k, &chords));
             if let Some(a) = e.wave.as_mut().and_then(|w| w.analysis.as_mut()) {
                 a.chords = chords;
                 a.grid = grid;
+                a.key = key;
             }
         }
         return Ok(());
@@ -191,7 +207,7 @@ fn ensure(e: &mut Engine, cmd: &str, p: &Value) -> Result<()> {
     let timbre = sections::timbre(&x, ANALYSIS_RATE, chroma.hop_s);
     let sections = sections::segment(&chroma, &timbre, &tempo, None);
     let analysis = Analysis {
-        revision,
+        audio,
         range,
         offset_s: from as f64 / f64::from(sr.max(1)),
         grid,
@@ -353,9 +369,9 @@ fn view_analysis(e: &mut Engine, p: &Value) -> Result<Value> {
 }
 
 fn analysis_info(e: &mut Engine, _: &Value) -> Result<Value> {
-    let revision = e.revision;
+    let audio = audio_key(e);
     Ok(match &wave(e)?.analysis {
-        Some(a) => json!({"analyzed": true, "stale": a.revision != revision}),
+        Some(a) => json!({"analyzed": true, "stale": a.audio != audio}),
         None => json!({"analyzed": false}),
     })
 }
@@ -440,6 +456,7 @@ fn lyrics_set(e: &mut Engine, p: &Value) -> Result<Value> {
     if text.as_ref().is_some_and(|t| t.len() > MAX_LYRICS_BYTES) {
         return Err(bad(ID, "the lyrics are longer than 1 MB"));
     }
+    let end_s = super::wave::file_len(e) as f32 / wave(e)?.sample_rate.max(1) as f32;
     let w = e.wave.as_mut().ok_or_else(|| EngineError::NotFound("no file open".into()))?;
     if let Some(words) = words {
         w.lyrics.heard = words;
@@ -449,8 +466,9 @@ fn lyrics_set(e: &mut Engine, p: &Value) -> Result<Value> {
         if w.lyrics.heard.is_empty() {
             return Err(bad(ID, NO_WORDS));
         }
-        w.lyrics.lines = lyrics::align(&text, &w.lyrics.heard);
+        w.lyrics.lines = lyrics::align(&text, &w.lyrics.heard, end_s);
     }
+    w.lyrics.version = w.lyrics.version.wrapping_add(1);
     let heard = &w.lyrics.heard;
     let aligned = w.lyrics.lines.iter().flat_map(|l| &l.words).filter(|x| heard.iter().any(|h| h.start == x.start && h.end == x.end)).count();
     Ok(json!({"heard": heard.len(), "lines": w.lyrics.lines.len(), "aligned": aligned}))
@@ -609,6 +627,31 @@ mod tests {
         run(&mut e, "wave.gain", json!({"db": -1}));
         let info = run(&mut e, "wave.analysis_info", json!({}));
         assert_eq!((info["analyzed"].as_bool(), info["stale"].as_bool()), (Some(true), Some(true)));
+    }
+
+    #[test]
+    fn selecting_keeps_the_analysis_fresh() {
+        let mut e = open_song("analysis_select_fresh", &short_song(), 48_000);
+        run(&mut e, "wave.analyze", json!({}));
+        run(&mut e, "wave.select", json!({"start": 44_100, "end": 88_200}));
+        assert_eq!(run(&mut e, "wave.analysis_info", json!({}))["stale"], false);
+        // An export with the selection active still writes the whole analysed song.
+        let col = run(&mut e, "wave.chords_over_lyrics", json!({}));
+        assert!(col["chordpro"].as_str().unwrap().matches('[').count() > 8, "{}", col["chordpro"]);
+        run(&mut e, "wave.gain", json!({"db": -1}));
+        assert_eq!(run(&mut e, "wave.analysis_info", json!({}))["stale"], true);
+        run(&mut e, "edit.undo", json!({}));
+        assert_eq!(run(&mut e, "wave.analysis_info", json!({}))["stale"], false);
+    }
+
+    #[test]
+    fn queries_keep_the_analysed_grid() {
+        let mut e = open_song("analysis_keeps_grid", &short_song(), 48_000);
+        let beat = run(&mut e, "wave.analyze", json!({"grid": "beat"}))["chords"].as_array().unwrap().len();
+        run(&mut e, "wave.analyze_tempo", json!({}));
+        let after = run(&mut e, "wave.analyze_chords", json!({}))["chords"].as_array().unwrap().len();
+        assert_eq!(after, beat);
+        assert_eq!(e.wave.as_ref().and_then(|w| w.analysis.as_ref()).map(|a| a.grid), Some(Grid::Beat));
     }
 
     #[test]
