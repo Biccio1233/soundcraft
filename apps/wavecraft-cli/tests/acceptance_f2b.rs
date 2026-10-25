@@ -251,7 +251,9 @@ fn long_instrumental_passages_add_no_words() {
         );
         let heard = heard_words(result(&results, "wave.lyrics"));
         println!("{language}: {}", heard.iter().map(|(w, t)| format!("{w}@{t:.2}")).collect::<Vec<_>>().join(" "));
-        let phantom: Vec<&(String, f32)> = heard.iter().filter(|(_, t)| *t < first_gap_end || (*t > gap_from && *t < gap_to)).collect();
+        let after_last = truth.iter().map(|(_, t)| *t).fold(0.0f32, f32::max) + 2.5;
+        let phantom: Vec<&(String, f32)> =
+            heard.iter().filter(|(_, t)| *t < first_gap_end || (*t > gap_from && *t < gap_to) || *t > after_last).collect();
         let found = aligned(&truth, &heard);
         println!("{language}: {found}/{} words aligned, {} in the instrumental passages", truth.len(), phantom.len());
         assert!(phantom.is_empty(), "{language}: words in the instrumental passages: {phantom:?}");

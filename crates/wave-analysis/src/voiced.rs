@@ -87,6 +87,21 @@ pub fn regions(x: &[f32], sample_rate: u32) -> Vec<Range<usize>> {
         .collect()
 }
 
+/// Drop the words with no voice from 0.1 s before their start to 0.3 s after it: what the model
+/// writes into silence (its "Grazie a tutti." after the last sung word).
+pub fn keep_voiced(words: &mut Vec<Word>, x: &[f32], sample_rate: u32) {
+    if sample_rate == 0 {
+        return;
+    }
+    let env = Envelope::new(x, sample_rate);
+    let frame_s = env.hop as f32 / sample_rate as f32;
+    words.retain(|w| {
+        let from = ((w.start - 0.1).max(0.0) / frame_s) as usize;
+        let to = ((w.start + 0.3).max(0.0) / frame_s).ceil() as usize;
+        (from..=to).any(|f| env.voiced(f))
+    });
+}
+
 /// Set each word's end where the voice stops after its start (three quiet frames), never past the
 /// next word's start nor [`MAX_WORD_S`] after its own; legato words end where the next begins.
 pub fn settle_word_ends(words: &mut [Word], x: &[f32], sample_rate: u32) {

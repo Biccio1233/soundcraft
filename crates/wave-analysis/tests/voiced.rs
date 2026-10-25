@@ -55,3 +55,14 @@ fn word_ends_follow_the_voice() {
     }
     assert!(words.windows(2).all(|p| p[0].end <= p[1].start + 1e-6), "words overlap: {ends:?}");
 }
+
+#[test]
+fn words_where_no_voice_sings_are_dropped() {
+    // A sung word, and the model's phantom "Grazie a tutti." after the voice has stopped.
+    let x = take(10.0, &[(1.0, 1.4), (2.0, 2.6)]);
+    let w = |text: &str, start: f32| Word { text: text.into(), start, end: start };
+    let mut words = vec![w("vero", 1.02), w("ancora", 2.05), w("Grazie", 8.1), w("a", 8.1), w("tutti.", 8.2)];
+    voiced::keep_voiced(&mut words, &x, SR);
+    let kept: Vec<&str> = words.iter().map(|w| w.text.as_str()).collect();
+    assert_eq!(kept, ["vero", "ancora"]);
+}

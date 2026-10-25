@@ -97,6 +97,7 @@ pub fn transcribe(path: &Path, id: &str, mono_16k: &[f32], language: Option<&str
         }
     }
     words.sort_by(|a, b| a.start.total_cmp(&b.start));
+    voiced::keep_voiced(&mut words, &audio, RATE as u32);
     voiced::settle_word_ends(&mut words, &audio, RATE as u32);
     Ok(words)
 }
