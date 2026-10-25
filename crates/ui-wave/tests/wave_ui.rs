@@ -302,6 +302,20 @@ fn song_opened(test: &str) -> Engine {
 fn menu(h: &mut Harness<'static, WaveApp>, label: &str) {
     let item = WAVE_MENUS.iter().find(|m| m.label == label).unwrap_or_else(|| panic!("no menu item {label}"));
     soundcraft_ui_wave::menus::invoke(h.state_mut(), item);
+    h.step();
+    finish_jobs(h);
+}
+
+/// Step the UI until the background job (if any) is applied.
+fn finish_jobs(h: &mut Harness<'static, WaveApp>) {
+    for _ in 0..3000 {
+        if !h.state().job_running() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.step();
+    }
+    assert!(!h.state().job_running(), "the job never finished");
     h.run();
 }
 
@@ -412,4 +426,105 @@ fn lanes_use_the_suggested_capo() {
     h.run();
     let lanes = h.state().analysis_lanes().expect("lanes");
     assert!(!lanes.chords.iter().any(|c| c.2.starts_with("Eb")), "lanes not shown as capo shapes: {:?}", lanes.chords);
+}
+
+/// Separation = four quarters of the mix; transcription = two fixed words; stretch = resampled
+/// to the new length.
+#[derive(Default)]
+struct Fake;
+
+impl soundcraft_wave_analysis::models::Models for Fake {
+    fn installed(&self, _: &str) -> Option<std::path::PathBuf> {
+        Some(std::path::PathBuf::from("/fake"))
+    }
+    fn download(&self, _: &str, _: &mut dyn FnMut(u64, u64)) -> Result<std::path::PathBuf, String> {
+        Ok(std::path::PathBuf::from("/fake"))
+    }
+    fn separate(&self, _: &str, ch: &[Vec<f32>], _: u32, _: &mut dyn FnMut(f32)) -> Result<Vec<soundcraft_wave_analysis::models::Stem>, String> {
+        Ok(["drums", "bass", "other", "vocals"]
+            .iter()
+            .map(|n| soundcraft_wave_analysis::models::Stem {
+                name: n.to_string(),
+                channels: ch.iter().map(|c| c.iter().map(|v| v * 0.25).collect()).collect(),
+            })
+            .collect())
+    }
+    fn transcribe(&self, _: &str, _: &[f32], _: Option<&str>) -> Result<Vec<soundcraft_wave_analysis::lyrics::Word>, String> {
+        use soundcraft_wave_analysis::lyrics::Word;
+        Ok(vec![Word { text: "ciao".into(), start: 5.1, end: 5.5 }, Word { text: "mondo".into(), start: 5.6, end: 6.0 }])
+    }
+    fn stretch(&self, ch: &[Vec<f32>], _: u32, tempo: f32, _: f32) -> Result<Vec<Vec<f32>>, String> {
+        Ok(ch
+            .iter()
+            .map(|c| (0..(c.len() as f32 / tempo).round() as usize).map(|i| c.get((i as f32 * tempo) as usize).copied().unwrap_or(0.0)).collect())
+            .collect())
+    }
+}
+
+fn with_models(mut e: Engine) -> Engine {
+    e.wave_models = Some(std::sync::Arc::new(Fake));
+    e
+}
+
+#[test]
+fn model_menu_items_reach_their_commands() {
+    let ids: Vec<&str> = soundcraft_engine::command_specs().iter().map(|c| c.id).collect();
+    for (label, command) in [
+        ("Separate Stems…", "wave.separate_stems"),
+        ("Transcribe Lyrics…", "wave.transcribe"),
+        ("Practice…", "wave.practice"),
+        ("Models…", "wave.model_download"),
+    ] {
+        let m = WAVE_MENUS
+            .iter()
+            .find(|m| m.label == label && m.path.first() == Some(&"Analysis"))
+            .unwrap_or_else(|| panic!("Analysis ▸ {label} missing"));
+        assert_eq!(m.command, command);
+        assert!(ids.contains(&m.command));
+    }
+}
+
+#[test]
+fn separation_job_runs_off_the_ui_thread() {
+    let mut h = harness(with_models(song_opened("ml_ui_separate")));
+    menu(&mut h, "Separate Stems…");
+    h.get_by_label("Separate").click();
+    h.step();
+    finish_jobs(&mut h);
+    let stems = exec(&mut h, "wave.stems", json!({}));
+    assert_eq!(stems["stems"].as_array().map(Vec::len), Some(4), "{stems}");
+    assert!(h.query_all_by_label_contains("vocals").next().is_some(), "the window lists the stems");
+}
+
+#[test]
+fn transcription_fills_the_lyrics_window() {
+    let mut h = harness(with_models(song_opened("ml_ui_transcribe")));
+    menu(&mut h, "Transcribe Lyrics…");
+    h.get_by_label("Transcribe").click();
+    h.step();
+    finish_jobs(&mut h);
+    assert_eq!(exec(&mut h, "wave.lyrics", json!({}))["heard"], 2);
+    menu(&mut h, "Chords & Lyrics…");
+    assert!(h.query_all_by_label_contains("ciao").next().is_some(), "no transcribed word in the window");
+}
+
+#[test]
+fn practice_maps_positions() {
+    let mut h = harness(with_models(song_opened("ml_ui_practice")));
+    exec(&mut h, "wave.practice", json!({"tempo": 50}));
+    h.run();
+    let app = h.state();
+    assert_eq!(app.practice_factor(), Some(0.5));
+    assert_eq!(app.file_position(96_000), 48_000);
+    assert_eq!(app.practice_position(48_000), 96_000);
+    menu(&mut h, "Practice…");
+    assert!(h.query_all_by_label_contains("Tempo").next().is_some());
+}
+
+#[test]
+fn models_window_lists_sizes() {
+    let mut h = harness(with_models(song_opened("ml_ui_models")));
+    menu(&mut h, "Models…");
+    assert!(h.query_all_by_label_contains("169 MB").next().is_some(), "no model size shown");
+    assert!(h.query_all_by_label_contains("574 MB").next().is_some());
 }

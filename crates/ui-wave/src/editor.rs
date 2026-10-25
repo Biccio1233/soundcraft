@@ -218,7 +218,7 @@ fn draw_wave(ui: &egui::Ui, app: &mut WaveApp, full: Rect, t: &Tokens) {
         }
     }
     let (at, color) = match app.player.as_ref().filter(|p| p.is_playing()) {
-        Some(p) => (p.position(), t.playhead),
+        Some(p) => (app.file_position(p.position()), t.playhead),
         None => (sel.start, t.insertion),
     };
     let x = x_of(s, full, at);

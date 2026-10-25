@@ -214,8 +214,8 @@ pub fn draw_lanes(painter: &egui::Painter, app: &WaveApp, lanes: &Lanes, r: Rect
 
 /// Open a window, analysing the song first when there is nothing (or only stale results) to show.
 pub fn open(app: &mut WaveApp, lyrics: bool) {
-    if current(app).is_none() {
-        app.run("wave.analyze", json!({}));
+    if current(app).is_none() && !app.job_running() {
+        app.analyze_in_background();
     }
     if lyrics {
         app.analysis.lyrics_open = true;
@@ -286,6 +286,7 @@ pub fn windows(ctx: &egui::Context, app: &mut WaveApp) {
     let t = Tokens::current();
     let resolved = app.analysis.cache.as_ref().map_or(0, |c| c.capo);
     let analysed = app.analysis.cache.is_some();
+    let busy = app.job_running();
     let mut run_analysis = false;
     let mut export = false;
     if app.analysis.lyrics_open {
@@ -299,8 +300,12 @@ pub fn windows(ctx: &egui::Context, app: &mut WaveApp) {
             .open(&mut open)
             .show(ctx, |ui| {
                 if !analysed {
-                    ui.label("Nothing analysed yet.");
-                    run_analysis = ui.button("Analyze Song").clicked();
+                    if busy {
+                        ui.label("Analyzing…");
+                    } else {
+                        ui.label("Nothing analysed yet.");
+                        run_analysis = ui.button("Analyze Song").clicked();
+                    }
                     return;
                 }
                 controls(ui, &mut app.analysis, resolved);
@@ -331,8 +336,12 @@ pub fn windows(ctx: &egui::Context, app: &mut WaveApp) {
             .open(&mut open)
             .show(ctx, |ui| {
                 if !analysed {
-                    ui.label("Nothing analysed yet.");
-                    run_analysis = ui.button("Analyze Song").clicked();
+                    if busy {
+                        ui.label("Analyzing…");
+                    } else {
+                        ui.label("Nothing analysed yet.");
+                        run_analysis = ui.button("Analyze Song").clicked();
+                    }
                     return;
                 }
                 controls(ui, &mut app.analysis, resolved);
@@ -351,7 +360,7 @@ pub fn windows(ctx: &egui::Context, app: &mut WaveApp) {
         app.analysis.diagrams_open = open;
     }
     if run_analysis {
-        app.run("wave.analyze", json!({}));
+        app.analyze_in_background();
     }
     if export {
         let stem = app

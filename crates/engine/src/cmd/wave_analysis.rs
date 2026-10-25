@@ -195,36 +195,89 @@ fn ensure(e: &mut Engine, cmd: &str, p: &Value) -> Result<()> {
         }
         return Ok(());
     }
-    let sr = w.sample_rate;
-    let file = render_file(e)?;
-    let (from, to) = (usize::try_from(range.start).unwrap_or(0), usize::try_from(range.end).unwrap_or(0));
-    let part: Vec<Vec<f32>> = file.iter().map(|c| c.get(from..to.min(c.len())).unwrap_or(&[]).to_vec()).collect();
-    let x = analysis_signal(&part, sr);
-    let tuning = tuning::estimate(&x, ANALYSIS_RATE);
-    let cents = if tuning.confidence >= TUNING_TRUSTED { tuning.cents } else { 0.0 };
-    let chroma = chroma::compute(&x, ANALYSIS_RATE, cents);
-    let tempo = tempo::analyze(&x, ANALYSIS_RATE, Some(&chroma), bpb);
-    let chords = soundcraft_wave_analysis::chords::recognize(&chroma, &tempo, grid);
-    let key = keys::estimate(&keys::profile(&chroma)).map(|k| soundcraft_wave_analysis::chords::settle_key(k, &chords));
-    let timbre = sections::timbre(&x, ANALYSIS_RATE, chroma.hop_s);
-    let sections = sections::segment(&chroma, &timbre, &tempo, None);
-    let analysis = Analysis {
-        audio,
-        range,
-        offset_s: from as f64 / f64::from(sr.max(1)),
-        grid,
-        beats_per_bar: bpb,
-        tuning,
-        tempo,
-        key,
-        chords,
-        sections,
-        chroma,
-    };
+    let done = new_job(e, range, grid, bpb)?.run();
     if let Some(w) = e.wave.as_mut() {
-        w.analysis = Some(analysis);
+        w.analysis = Some(done.analysis);
     }
     Ok(())
+}
+
+/// An analysis, runnable off the UI thread ([`AnalysisJob::run`], then [`apply_analysis`]).
+pub struct AnalysisJob {
+    part: Vec<Vec<f32>>,
+    sample_rate: u32,
+    range: Range,
+    grid: Grid,
+    beats_per_bar: Option<u8>,
+    audio: u64,
+    path: Option<String>,
+}
+
+pub struct AnalysisDone {
+    analysis: Analysis,
+    path: Option<String>,
+}
+
+fn new_job(e: &Engine, range: Range, grid: Grid, beats_per_bar: Option<u8>) -> Result<AnalysisJob> {
+    let w = wave(e)?;
+    let file = render_file(e)?;
+    let (from, to) = (usize::try_from(range.start).unwrap_or(0), usize::try_from(range.end).unwrap_or(0));
+    let part = file.iter().map(|c| c.get(from..to.min(c.len())).unwrap_or(&[]).to_vec()).collect();
+    Ok(AnalysisJob { part, sample_rate: w.sample_rate, range, grid, beats_per_bar, audio: audio_key(e), path: w.path.clone() })
+}
+
+/// The job `wave.analyze` would run with `p` (the selection or the whole file).
+pub fn analysis_job(e: &Engine, p: &Value) -> Result<AnalysisJob> {
+    const ID: &str = "wave.analyze";
+    let range = wave_range(e, ID, p)?;
+    if range.is_empty() {
+        return Err(bad(ID, "the range is empty"));
+    }
+    let grid = grid_param(ID, p, None)?;
+    let bpb = int_param(ID, p, "beats_per_bar", 2..=7)?.map(|v| v as u8);
+    new_job(e, range, grid, bpb)
+}
+
+impl AnalysisJob {
+    pub fn run(self) -> AnalysisDone {
+        let sr = self.sample_rate;
+        let x = analysis_signal(&self.part, sr);
+        let tuning = tuning::estimate(&x, ANALYSIS_RATE);
+        let cents = if tuning.confidence >= TUNING_TRUSTED { tuning.cents } else { 0.0 };
+        let chroma = chroma::compute(&x, ANALYSIS_RATE, cents);
+        let tempo = tempo::analyze(&x, ANALYSIS_RATE, Some(&chroma), self.beats_per_bar);
+        let chords = soundcraft_wave_analysis::chords::recognize(&chroma, &tempo, self.grid);
+        let key = keys::estimate(&keys::profile(&chroma)).map(|k| soundcraft_wave_analysis::chords::settle_key(k, &chords));
+        let timbre = sections::timbre(&x, ANALYSIS_RATE, chroma.hop_s);
+        let sections = sections::segment(&chroma, &timbre, &tempo, None);
+        let offset_s = self.range.start.max(0) as f64 / f64::from(sr.max(1));
+        let analysis = Analysis {
+            audio: self.audio,
+            range: self.range,
+            offset_s,
+            grid: self.grid,
+            beats_per_bar: self.beats_per_bar,
+            tuning,
+            tempo,
+            key,
+            chords,
+            sections,
+            chroma,
+        };
+        AnalysisDone { analysis, path: self.path }
+    }
+}
+
+/// Store a finished analysis, unless the file or its audio changed while it ran.
+pub fn apply_analysis(e: &mut Engine, done: AnalysisDone) -> Result<Value> {
+    let w = wave(e)?;
+    if w.path != done.path || audio_key(e) != done.analysis.audio {
+        return Err(EngineError::NotFound("discarded: the file changed while the job ran".into()));
+    }
+    if let Some(w) = e.wave.as_mut() {
+        w.analysis = Some(done.analysis);
+    }
+    analysis_json(e)
 }
 
 fn current(e: &Engine) -> Result<&Analysis> {
@@ -321,6 +374,11 @@ fn sections_json(a: &Analysis) -> Vec<Value> {
 
 fn analyze(e: &mut Engine, p: &Value) -> Result<Value> {
     ensure(e, "wave.analyze", p)?;
+    analysis_json(e)
+}
+
+/// Everything `wave.analyze` reports about the current analysis.
+fn analysis_json(e: &Engine) -> Result<Value> {
     let a = current(e)?;
     Ok(json!({
         "start": ms(a.offset_s),
@@ -645,6 +703,19 @@ mod tests {
         assert_eq!(run(&mut e, "wave.analysis_info", json!({}))["stale"], true);
         run(&mut e, "edit.undo", json!({}));
         assert_eq!(run(&mut e, "wave.analysis_info", json!({}))["stale"], false);
+    }
+
+    #[test]
+    fn analysis_job_runs_apart_and_refuses_stale_results() {
+        let mut e = open_song("analysis_job", &short_song(), 48_000);
+        let job = analysis_job(&e, &json!({})).unwrap();
+        let done = job.run();
+        let r = apply_analysis(&mut e, done).unwrap();
+        assert!((r["tempo"]["bpm"].as_f64().unwrap() - 96.0).abs() <= 2.0);
+        assert_eq!(run(&mut e, "wave.analysis_info", json!({}))["stale"], false);
+        let stale = analysis_job(&e, &json!({})).unwrap().run();
+        run(&mut e, "wave.gain", json!({"db": -1}));
+        assert!(apply_analysis(&mut e, stale).is_err());
     }
 
     #[test]

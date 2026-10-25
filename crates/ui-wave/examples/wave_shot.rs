@@ -4,7 +4,9 @@
 //!
 //! Script lines are `{"command": "wave.gain", "params": {...}}` (run on the engine),
 //! `{"menu": "Noise Reduction…"}` (invoke the menu item with that label), `{"shot": "path.png"}` or
-//! `{"steps": n}`.
+//! `{"steps": n}`. `--fake-models` gives the app a stand-in model runtime (separation into quarters,
+//! two fixed words, a resampling "stretch", only htdemucs and the default Whisper installed) to look
+//! at the model windows without the native libraries.
 
 use serde_json::Value;
 use soundcraft_ui_egui::Services;
@@ -23,6 +25,9 @@ fn main() {
         .and_then(|(a, b)| Some((a.parse::<f32>().ok()?, b.parse::<f32>().ok()?)))
         .unwrap_or((1512.0, 898.0));
     let mut engine = soundcraft_engine::Engine::default();
+    if args.iter().any(|a| a == "--fake-models") {
+        engine.wave_models = Some(std::sync::Arc::new(FakeModels));
+    }
     if let Some(f) = &file
         && let Err(e) = engine.execute("wave.open", &serde_json::json!({"path": f}))
     {
@@ -77,4 +82,34 @@ fn main() {
     }
     harness.run();
     shoot(&mut harness, &out);
+}
+
+struct FakeModels;
+
+impl soundcraft_wave_analysis::models::Models for FakeModels {
+    fn installed(&self, id: &str) -> Option<std::path::PathBuf> {
+        matches!(id, "htdemucs" | "whisper-large-v3-turbo-q5_0").then(|| std::path::PathBuf::from("/fake"))
+    }
+    fn download(&self, _: &str, _: &mut dyn FnMut(u64, u64)) -> Result<std::path::PathBuf, String> {
+        Err("downloads are off in screenshots".into())
+    }
+    fn separate(&self, _: &str, ch: &[Vec<f32>], _: u32, _: &mut dyn FnMut(f32)) -> Result<Vec<soundcraft_wave_analysis::models::Stem>, String> {
+        Ok(["drums", "bass", "other", "vocals"]
+            .iter()
+            .map(|n| soundcraft_wave_analysis::models::Stem {
+                name: n.to_string(),
+                channels: ch.iter().map(|c| c.iter().map(|v| v * 0.25).collect()).collect(),
+            })
+            .collect())
+    }
+    fn transcribe(&self, _: &str, _: &[f32], _: Option<&str>) -> Result<Vec<soundcraft_wave_analysis::lyrics::Word>, String> {
+        use soundcraft_wave_analysis::lyrics::Word;
+        Ok(vec![Word { text: "chiusa".into(), start: 10.3, end: 10.8 }, Word { text: "vive".into(), start: 10.9, end: 11.4 }])
+    }
+    fn stretch(&self, ch: &[Vec<f32>], _: u32, tempo: f32, _: f32) -> Result<Vec<Vec<f32>>, String> {
+        Ok(ch
+            .iter()
+            .map(|c| (0..(c.len() as f32 / tempo).round() as usize).map(|i| c.get((i as f32 * tempo) as usize).copied().unwrap_or(0.0)).collect())
+            .collect())
+    }
 }

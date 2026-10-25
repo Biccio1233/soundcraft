@@ -8,8 +8,10 @@ pub mod control;
 mod editor;
 mod files;
 mod history;
+pub mod jobs;
 mod levels;
 pub mod menus;
+pub mod models_ui;
 mod rack;
 pub mod restore;
 mod selection;
@@ -63,6 +65,12 @@ pub struct WaveApp {
     stats: Option<Value>,
     /// The analysis level, capo and windows.
     analysis: analysis::View,
+    /// The model windows (stems, transcription, practice, models).
+    models: models_ui::State,
+    /// The background job, if one runs.
+    job: Option<jobs::Job>,
+    /// The practice session the player was last given (its address; 0 = the document).
+    player_practice: usize,
 }
 
 /// An export whose path is chosen: the options window picks depth and dither.
@@ -101,6 +109,9 @@ impl WaveApp {
             effect: None,
             stats: None,
             analysis: analysis::View::default(),
+            models: models_ui::State::default(),
+            job: None,
+            player_practice: 0,
         }
     }
 
@@ -184,12 +195,24 @@ impl WaveApp {
             soundcraft_ui_egui::theme::apply(ctx, false);
             self.styled = true;
         }
-        if let Some(p) = &self.player
-            && self.engine.revision != self.synced_revision
-            && self.drag_anchor.is_none()
-        {
-            p.update_session(self.engine.session_arc());
-            self.synced_revision = self.engine.revision;
+        self.poll_job(ctx);
+        // The player plays the practice render while there is one, else the document.
+        let practice = self.engine.wave.as_ref().and_then(|w| w.practice.as_ref()).map(|p| std::sync::Arc::clone(&p.session));
+        let want = practice.as_ref().map_or(0, |s| std::sync::Arc::as_ptr(s) as usize);
+        if let Some(p) = &self.player {
+            if want != self.player_practice {
+                match practice {
+                    Some(s) => p.update_session(s),
+                    None => {
+                        p.update_session(self.engine.session_arc());
+                        self.synced_revision = self.engine.revision;
+                    }
+                }
+                self.player_practice = want;
+            } else if want == 0 && self.engine.revision != self.synced_revision && self.drag_anchor.is_none() {
+                p.update_session(self.engine.session_arc());
+                self.synced_revision = self.engine.revision;
+            }
         }
         for req in std::mem::take(&mut self.engine.transport_requests) {
             use soundcraft_engine::TransportRequest as T;
@@ -214,18 +237,22 @@ impl WaveApp {
         self.player.as_ref().is_some_and(Player::is_playing)
     }
 
-    /// Play the selection (looped when looping is on), or from the cursor to the end.
+    /// Play the selection (looped when looping is on), or from the cursor to the end; while a
+    /// practice render plays, the same span of it.
     fn play(&mut self) {
         let sel = self.selection();
+        let practicing = self.practice_factor().is_some();
+        let (start, end) = (self.practice_position(sel.start), self.practice_position(sel.end));
+        let total = self.practice_position(self.file_len());
         if let Some(p) = &self.player {
-            if self.engine.revision != self.synced_revision {
+            if !practicing && self.engine.revision != self.synced_revision {
                 p.update_session(self.engine.session_arc());
                 self.synced_revision = self.engine.revision;
             }
             if sel.is_empty() {
-                p.play(sel.start, Some(self.file_len()), None);
+                p.play(start, Some(total), None);
             } else {
-                p.play(sel.start, Some(sel.end), self.looping.then_some(sel));
+                p.play(start, Some(end), self.looping.then_some(Range::new(start, end)));
             }
         } else {
             self.status = "no audio output".into();
@@ -321,7 +348,9 @@ impl WaveApp {
         egui::Panel::top("wave_menu").show(ui, |ui| menus::bar(ui, self));
         egui::Panel::bottom("wave_status").show(ui, |ui| {
             let t = soundcraft_ui_egui::theme::Tokens::current();
-            let text = if self.status.is_empty() {
+            let text = if let Some(job) = self.job_status() {
+                job
+            } else if self.status.is_empty() {
                 self.engine.wave.as_ref().map_or_else(|| "No file open".to_string(), files::summary)
             } else {
                 self.status.clone()
@@ -348,6 +377,22 @@ impl WaveApp {
         restore::effect_window(&ctx, self);
         restore::stats_window(&ctx, self);
         analysis::windows(&ctx, self);
+        models_ui::windows(&ctx, self);
+    }
+
+    /// The practice render's tempo as a factor of the original (0.5 = half speed), when one plays.
+    pub fn practice_factor(&self) -> Option<f64> {
+        self.engine.wave.as_ref().and_then(|w| w.practice.as_ref()).map(|p| f64::from(p.tempo) / 100.0)
+    }
+
+    /// The file position heard at `at` in the practice render (unchanged without one).
+    pub fn file_position(&self, at: Samples) -> Samples {
+        self.practice_factor().map_or(at, |f| (at as f64 * f).round() as Samples)
+    }
+
+    /// The practice render's position for file position `at` (unchanged without one).
+    pub fn practice_position(&self, at: Samples) -> Samples {
+        self.practice_factor().filter(|f| *f > 0.0).map_or(at, |f| (at as f64 / f).round() as Samples)
     }
 
     /// The analysis level, capo and windows.
