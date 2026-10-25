@@ -20,6 +20,7 @@ mod spectral;
 use egui::Rect;
 use serde_json::{Value, json};
 use soundcraft_engine::Engine;
+use soundcraft_engine::cmd::wave_ml as ml;
 use soundcraft_playback::Player;
 use soundcraft_time::{Range, Samples};
 use soundcraft_ui_egui::Services;
@@ -199,8 +200,8 @@ impl WaveApp {
             self.cancel_job();
         }
         self.poll_job(ctx);
-        // The player plays the practice render while there is one, else the document.
-        let practice = self.engine.wave.as_ref().and_then(|w| w.practice.as_ref()).map(|p| std::sync::Arc::clone(&p.session));
+        // The player plays the practice render while it matches the file, else the document.
+        let practice = ml::current_practice(&self.engine).map(|p| std::sync::Arc::clone(&p.session));
         let want = practice.as_ref().map_or(0, |s| std::sync::Arc::as_ptr(s) as usize);
         if let Some(p) = &self.player {
             if want != self.player_practice {
@@ -224,6 +225,7 @@ impl WaveApp {
                 T::Stop | T::Pause | T::ResetSession => self.stop(),
                 T::TogglePlay => self.toggle_play(),
                 T::Locate(at) => {
+                    let at = self.practice_position(at);
                     if let Some(p) = &self.player {
                         p.locate(at);
                     }
@@ -359,10 +361,11 @@ impl WaveApp {
                 self.status.clone()
             };
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(text).color(t.text_dim));
+                // Before the text, so it stays put while the progress changes.
                 if self.job_running() && ui.small_button("Cancel").clicked() {
                     self.run("wave.cancel_job", json!({}));
                 }
+                ui.label(egui::RichText::new(text).color(t.text_dim));
             });
         });
         egui::Panel::bottom("wave_bottom").resizable(false).show(ui, |ui| {
@@ -388,9 +391,15 @@ impl WaveApp {
         models_ui::windows(&ctx, self);
     }
 
+    /// The file position heard now: the player's while it plays (mapped back from the practice
+    /// render), else the cursor.
+    pub fn heard_position(&self) -> Samples {
+        self.player.as_ref().filter(|p| p.is_playing()).map_or(self.selection().start, |p| self.file_position(p.position()))
+    }
+
     /// The practice render's tempo as a factor of the original (0.5 = half speed), when one plays.
     pub fn practice_factor(&self) -> Option<f64> {
-        self.engine.wave.as_ref().and_then(|w| w.practice.as_ref()).map(|p| f64::from(p.tempo) / 100.0)
+        ml::current_practice(&self.engine).map(|p| f64::from(p.tempo) / 100.0)
     }
 
     /// The file position heard at `at` in the practice render (unchanged without one).

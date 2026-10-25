@@ -289,8 +289,7 @@ fn transport_bar(ui: &mut egui::Ui, app: &mut WaveApp, r: Rect) {
         app.toggle_play();
     }
     ui.toggle_value(&mut app.looping, "Loop");
-    let at = app.player.as_ref().filter(|p| p.is_playing()).map_or(app.selection().start, |p| p.position());
-    ui.monospace(clock(at, app.sample_rate()));
+    ui.monospace(clock(app.heard_position(), app.sample_rate()));
     ui.separator();
     let tl = app.timeline;
     let spp = app.engine.session().edit.zoom.samples_per_px;

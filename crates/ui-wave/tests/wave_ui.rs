@@ -591,6 +591,76 @@ fn practice_maps_positions() {
 }
 
 #[test]
+fn practice_stops_when_the_file_is_edited() {
+    let mut h = harness(with_models(song_opened("ml_ui_practice_edit")));
+    exec(&mut h, "wave.practice", json!({"tempo": 50}));
+    h.run();
+    assert_eq!(h.state().practice_factor(), Some(0.5));
+    exec(&mut h, "wave.gain", json!({"db": -1}));
+    h.run();
+    assert_eq!(h.state().practice_factor(), None, "the old render no longer matches the file");
+}
+
+#[test]
+fn stale_stems_fall_back_to_the_mix() {
+    let mut h = harness(with_models(song_opened("ml_ui_stale_stems")));
+    exec(&mut h, "wave.separate_stems", json!({}));
+    exec(&mut h, "wave.gain", json!({"db": -1}));
+    menu(&mut h, "Transcribe Lyrics…");
+    assert!(h.query_all_by_label_contains("Listens to the mix").next().is_some(), "stale stems offered for transcription");
+    menu(&mut h, "Practice…");
+    assert!(h.query_all_by_label("vocals").next().is_none(), "sliders for stale stems");
+    h.get_by_label("Render").click();
+    h.step();
+    finish_jobs(&mut h);
+    assert!(h.state().practice_factor().is_some(), "no practice render");
+}
+
+/// A 4 s silent file: a real player can run it without a sound.
+fn silent_opened(test: &str) -> Engine {
+    let dir = std::env::temp_dir().join("wavecraft-ui-tests").join(test);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("silence.wav");
+    let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
+    let buf = AudioBuffer { sample_rate: 48_000, channels: vec![vec![0.0; 192_000]; 2] };
+    std::fs::write(&path, soundcraft_audio_io::encode(&buf, &opts).unwrap()).unwrap();
+    let mut e = Engine::default();
+    e.execute("wave.open", &json!({"path": path.to_str().unwrap()})).unwrap();
+    e
+}
+
+#[test]
+fn locate_and_the_heard_position_follow_the_practice_tempo() {
+    let e = with_models(silent_opened("ml_ui_practice_player"));
+    let player = soundcraft_playback::Player::new(e.session_arc());
+    let app = WaveApp::new(e, Some(player), Services::default());
+    let mut h = Harness::builder().with_size(vec2(1400.0, 900.0)).build_ui_state(
+        |ui, app: &mut WaveApp| {
+            let ctx = ui.ctx().clone();
+            app.logic(&ctx);
+            app.ui(ui);
+        },
+        app,
+    );
+    exec(&mut h, "wave.practice", json!({"tempo": 50}));
+    h.step();
+    // Play from the cursor at 1 s: the half-speed render starts 2 s in; what is heard is the file at 1 s.
+    exec(&mut h, "wave.select", json!({"start": 48_000, "end": 48_000}));
+    exec(&mut h, "transport.play", json!({}));
+    h.step();
+    let heard = h.state().heard_position();
+    assert!((heard - 48_000).abs() < 12_000, "after play: heard at {heard}");
+    // Locate to 2 s of the file: the render jumps to 4 s.
+    exec(&mut h, "transport.locate", json!({"at": 96_000}));
+    h.step();
+    let heard = h.state().heard_position();
+    assert!((heard - 96_000).abs() < 12_000, "after locate: heard at {heard}");
+    exec(&mut h, "transport.stop", json!({}));
+    h.step();
+}
+
+#[test]
 fn models_window_lists_sizes() {
     let mut h = harness(with_models(song_opened("ml_ui_models")));
     menu(&mut h, "Models…");

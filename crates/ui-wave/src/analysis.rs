@@ -270,8 +270,7 @@ fn sung(cache: &Cache, now_s: f64) -> Vec<usize> {
 
 fn now_s(app: &WaveApp) -> f64 {
     let sr = f64::from(app.sample_rate().max(1));
-    let at = app.player.as_ref().filter(|p| p.is_playing()).map_or(app.selection().start, |p| p.position());
-    at as f64 / sr
+    app.heard_position() as f64 / sr
 }
 
 /// The Chords & Lyrics and Chord Diagrams windows, when open. The shared cache (which also gives

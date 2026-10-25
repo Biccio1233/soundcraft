@@ -3,6 +3,7 @@
 
 use crate::WaveApp;
 use serde_json::{Value, json};
+use soundcraft_engine::cmd::wave_ml::{current_practice, current_stems};
 use soundcraft_wave_analysis::models::{DEFAULT_WHISPER, MODELS, ModelKind, model};
 
 const LANGUAGES: [(&str, &str); 3] = [("auto", "Auto"), ("it", "Italiano"), ("en", "English")];
@@ -98,7 +99,8 @@ fn stems_window(ctx: &egui::Context, app: &mut WaveApp, actions: &mut Vec<Action
             if let Some(s) = app.engine.wave.as_ref().and_then(|w| w.stems.as_ref()) {
                 ui.separator();
                 let names: Vec<&str> = s.files.iter().map(|f| f.0.as_str()).collect();
-                ui.label(format!("Stems: {}", names.join(", ")));
+                let stale = if current_stems(&app.engine).is_some() { "" } else { " (out of date: the file changed since)" };
+                ui.label(format!("Stems: {}{stale}", names.join(", ")));
                 ui.label(egui::RichText::new(format!("Written to {}", s.dir)).small());
             }
         });
@@ -135,7 +137,7 @@ fn transcribe_window(ctx: &egui::Context, app: &mut WaveApp, actions: &mut Vec<A
                     }
                 });
             });
-            let source = if app.engine.wave.as_ref().and_then(|w| w.stems.as_ref()).is_some() {
+            let source = if current_stems(&app.engine).is_some_and(|s| s.stems.iter().any(|st| st.name == "vocals")) {
                 "the vocals stem"
             } else {
                 "the mix (separate stems first for cleaner words)"
@@ -153,8 +155,7 @@ fn practice_window(ctx: &egui::Context, app: &mut WaveApp, actions: &mut Vec<Act
     let mut open = app.models.practice_open;
     let busy = app.job_running();
     // One gain per current stem.
-    let stem_names: Vec<String> =
-        app.engine.wave.as_ref().and_then(|w| w.stems.as_ref()).map(|s| s.files.iter().map(|f| f.0.clone()).collect()).unwrap_or_default();
+    let stem_names: Vec<String> = current_stems(&app.engine).map(|s| s.files.iter().map(|f| f.0.clone()).collect()).unwrap_or_default();
     if app.models.gains.iter().map(|g| &g.0).ne(stem_names.iter()) {
         app.models.gains = stem_names.iter().map(|n| (n.clone(), 1.0)).collect();
     }
@@ -184,12 +185,14 @@ fn practice_window(ctx: &egui::Context, app: &mut WaveApp, actions: &mut Vec<Act
                 if ui.add_enabled(on.is_some(), egui::Button::new("Off")).clicked() {
                     actions.push(Action::PracticeOff);
                 }
-                if ui.add_enabled(on.is_some(), egui::Button::new("Export…")).clicked() {
+                if ui.add_enabled(current_practice(&app.engine).is_some(), egui::Button::new("Export…")).clicked() {
                     actions.push(Action::ExportPractice);
                 }
             });
-            if let Some(p) = app.engine.wave.as_ref().and_then(|w| w.practice.as_ref()) {
+            if let Some(p) = current_practice(&app.engine) {
                 ui.label(format!("Playing the practice render: {:.0} %, {:+.0} semitones", p.tempo, p.semitones));
+            } else if app.engine.wave.as_ref().is_some_and(|w| w.practice.is_some()) {
+                ui.label("The file changed since the last render: Render again to practise it.");
             }
         });
     app.models.practice_open = open;
@@ -264,7 +267,7 @@ pub fn windows(ctx: &egui::Context, app: &mut WaveApp) {
 
 /// Open the Practice window, its sliders on the render that plays (if any).
 pub fn open_practice(app: &mut WaveApp) {
-    if let Some(p) = app.engine.wave.as_ref().and_then(|w| w.practice.as_ref()) {
+    if let Some(p) = current_practice(&app.engine) {
         app.models.tempo = p.tempo;
         app.models.semitones = p.semitones;
         app.models.gains = p.gains.clone();

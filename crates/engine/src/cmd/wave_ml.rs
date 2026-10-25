@@ -36,6 +36,8 @@ pub struct Stems {
 /// A practice render: the file (or a stem mix) at another tempo and pitch, as its own session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Practice {
+    /// The file's audio key when rendered: out of date once it differs.
+    pub audio: u64,
     /// Percent of the original tempo.
     pub tempo: f32,
     pub semitones: f32,
@@ -264,20 +266,20 @@ fn stems_info(e: &mut Engine, _: &Value) -> Result<Value> {
 }
 
 /// The current stems (separated from the audio as it is now).
-fn fresh_stems(e: &Engine) -> Option<&Stems> {
+pub fn current_stems(e: &Engine) -> Option<&Stems> {
     let audio = audio_key(e);
     e.wave.as_ref()?.stems.as_ref().filter(|s| s.audio == audio)
 }
 
 /// Whether current stems with a harmonic part exist (cheap: nothing is summed).
 pub fn has_harmonic_stems(e: &Engine) -> bool {
-    fresh_stems(e).is_some_and(|s| s.stems.iter().any(|st| st.name != "vocals" && st.name != "drums"))
+    current_stems(e).is_some_and(|s| s.stems.iter().any(|st| st.name != "vocals" && st.name != "drums"))
 }
 
 /// The harmonic part of the current stems — everything but the vocals and the drums — summed: what
 /// chords and key are best read from.
 pub fn harmonic_stems(e: &Engine) -> Option<Vec<Vec<f32>>> {
-    let stems = fresh_stems(e)?;
+    let stems = current_stems(e)?;
     let parts: Vec<&Stem> = stems.stems.iter().filter(|s| s.name != "vocals" && s.name != "drums").collect();
     let first = parts.first()?;
     let mut sum: Vec<Vec<f32>> = first.channels.iter().map(|c| vec![0.0f32; c.len()]).collect();
@@ -331,7 +333,7 @@ pub fn transcription_job(e: &Engine, p: &Value) -> Result<TranscriptionJob> {
     };
     let b = backend(e)?;
     let sr = wave(e)?.sample_rate;
-    let (audio_16k, source) = match fresh_stems(e).and_then(|s| s.stems.iter().find(|st| st.name == "vocals")) {
+    let (audio_16k, source) = match current_stems(e).and_then(|s| s.stems.iter().find(|st| st.name == "vocals")) {
         Some(v) => (mono_16k(&v.channels, sr), "vocals"),
         None => (mono_16k(&render_file(e)?, sr), "mix"),
     };
@@ -403,7 +405,7 @@ pub fn practice_job(e: &Engine, p: &Value) -> Result<PracticeJob> {
     let sr = wave(e)?.sample_rate;
     let (channels, gains) = match p.get("stems").and_then(Value::as_object) {
         Some(map) => {
-            let stems = fresh_stems(e).ok_or_else(|| bad(ID, "no current stems: run wave.separate_stems first"))?;
+            let stems = current_stems(e).ok_or_else(|| bad(ID, "no current stems: run wave.separate_stems first"))?;
             let mut gains = Vec::new();
             for s in &stems.stems {
                 let g = match map.get(&s.name) {
@@ -461,6 +463,7 @@ impl PracticeJob {
         let session = practice_session(&out, self.sample_rate)?;
         Ok(PracticeDone {
             practice: Practice {
+                audio: self.origin.audio,
                 tempo: self.tempo,
                 semitones: self.semitones,
                 gains: self.gains,
@@ -494,6 +497,12 @@ fn cancel_job(e: &mut Engine, _: &Value) -> Result<Value> {
     Ok(json!({"requested": true}))
 }
 
+/// The practice render, while it was made from the audio as it is now.
+pub fn current_practice(e: &Engine) -> Option<&Practice> {
+    let audio = audio_key(e);
+    e.wave.as_ref()?.practice.as_ref().filter(|p| p.audio == audio)
+}
+
 fn practice_off(e: &mut Engine, _: &Value) -> Result<Value> {
     let w = e.wave.as_mut().ok_or_else(|| EngineError::NotFound("no file open".into()))?;
     let was = w.practice.take().is_some();
@@ -505,7 +514,10 @@ fn practice_export(e: &mut Engine, p: &Value) -> Result<Value> {
     let path = str_param(p, "path").filter(|s| !s.trim().is_empty()).ok_or_else(|| bad(ID, "`path` required"))?.to_string();
     let depth = super::wave::depth_param(ID, p)?.unwrap_or(BitDepth::Int24);
     let w = wave(e)?;
-    let pr = w.practice.as_ref().ok_or_else(|| bad(ID, "no practice render: run wave.practice first"))?;
+    if w.practice.is_none() {
+        return Err(bad(ID, "no practice render: run wave.practice first"));
+    }
+    let pr = current_practice(e).ok_or_else(|| bad(ID, "the practice render is out of date (the file changed): run wave.practice again"))?;
     let format = match std::path::Path::new(&path).extension().and_then(|x| x.to_str()).map(str::to_ascii_lowercase).as_deref() {
         Some("aif" | "aiff") => FileFormat::Aiff,
         Some("flac") => FileFormat::Flac,
@@ -676,6 +688,18 @@ mod tests {
         run(&mut e, "wave.practice_off", json!({}));
         assert!(e.wave.as_ref().unwrap().practice.is_none());
         assert_eq!(super::super::wave::render_file(&e).unwrap()[0].len(), 96_000, "the file is untouched");
+    }
+
+    #[test]
+    fn practice_goes_out_of_date_with_the_audio() {
+        let (mut e, _, _) = take("ml_practice_stale");
+        run(&mut e, "wave.practice", json!({"tempo": 80}));
+        assert!(current_practice(&e).is_some());
+        run(&mut e, "wave.gain", json!({"db": -1}));
+        assert!(current_practice(&e).is_none(), "an edit leaves the render behind");
+        let path = tmp_dir("ml_practice_stale_out").join("p.wav");
+        let err = e.execute("wave.practice_export", &json!({"path": path.to_str().unwrap()})).unwrap_err().to_string();
+        assert!(err.contains("out of date"), "{err}");
     }
 
     #[test]
