@@ -251,3 +251,13 @@ pub fn acceptance_song() -> SongSpec {
         key: "A minor".into(),
     }
 }
+
+/// Signal-to-distortion ratio of `estimate` against `reference`, in dB.
+pub fn sdr(reference: &[f32], estimate: &[f32]) -> f32 {
+    let (mut num, mut den) = (0.0f64, 0.0f64);
+    for (r, e) in reference.iter().zip(estimate) {
+        num += f64::from(*r) * f64::from(*r);
+        den += f64::from(r - e) * f64::from(r - e);
+    }
+    (10.0 * (num.max(1e-20) / den.max(1e-20)).log10()) as f32
+}

@@ -6,6 +6,7 @@ pub mod chordpro;
 pub mod chords;
 pub mod chroma;
 pub mod cqt;
+pub mod demucs;
 pub mod key;
 pub mod lyrics;
 pub mod models;
