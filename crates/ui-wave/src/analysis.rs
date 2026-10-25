@@ -213,6 +213,13 @@ pub fn draw_lanes(painter: &egui::Painter, app: &WaveApp, lanes: &Lanes, r: Rect
     }
 }
 
+/// Analyse again what was analysed (same range, grid and bar length), when there is an analysis.
+pub(crate) fn reanalyze(app: &mut WaveApp) {
+    if let Some(p) = app.engine.wave.as_ref().and_then(|w| w.analysis.as_ref()).map(same_analysis) {
+        app.analyze_in_background_with(&p);
+    }
+}
+
 /// Open a window, analysing the song first when there is nothing (or only stale results) to show.
 pub fn open(app: &mut WaveApp, lyrics: bool) {
     if current(app).is_none() && !app.job_running() {

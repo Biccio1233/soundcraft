@@ -661,6 +661,20 @@ fn locate_and_the_heard_position_follow_the_practice_tempo() {
 }
 
 #[test]
+fn lanes_come_back_after_separation() {
+    let mut h = harness(with_models(song_opened("ml_ui_lanes_back")));
+    menu(&mut h, "Analyze Song");
+    finish_jobs(&mut h);
+    assert!(h.state().analysis_lanes().is_some());
+    menu(&mut h, "Separate Stems…");
+    h.get_by_label("Separate").click();
+    h.step();
+    finish_jobs(&mut h);
+    assert!(h.state().analysis_lanes().is_some(), "the lanes vanished after the separation");
+    assert_eq!(exec(&mut h, "wave.analysis_info", json!({}))["source"], "stems");
+}
+
+#[test]
 fn models_window_lists_sizes() {
     let mut h = harness(with_models(song_opened("ml_ui_models")));
     menu(&mut h, "Models…");

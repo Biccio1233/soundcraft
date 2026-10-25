@@ -137,3 +137,36 @@ fn chordpro_is_read_by_the_corpus_reader() {
     assert!(theirs.len() >= 8);
     assert_eq!(theirs, ours);
 }
+
+#[test]
+#[ignore = "needs the htdemucs model"]
+fn chords_from_real_stems_meet_the_target() {
+    // With current stems, chords come from their harmonic part (all but vocals and drums).
+    let d = dir("acceptance_f2_stems");
+    let (path, truth) = rendered(&d);
+    let results = script(
+        &d,
+        &format!(
+            "wave.open {{\"path\": \"{}\"}}\nwave.separate_stems {{\"model\": 4}}\nwave.analyze_key {{}}\nwave.analyze_chords {{\"grid\": \"bar\"}}\n",
+            path.to_str().unwrap()
+        ),
+    );
+    let chords = result(&results, "wave.analyze_chords");
+    let segs: Vec<ChordSegment> = chords["chords"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| ChordSegment {
+            start: c["start"].as_f64().unwrap() as f32,
+            end: c["end"].as_f64().unwrap() as f32,
+            chord: c["label"].as_str().and_then(Chord::parse),
+            confidence: c["confidence"].as_f64().unwrap_or(0.0) as f32,
+        })
+        .collect();
+    let accuracy = bar_accuracy(&segs, &truth.bars);
+    let key = result(&results, "wave.analyze_key");
+    println!("from stems ({}): key {}, chords {:.1} % of bars", key["source"], key["key"], accuracy * 100.0);
+    assert_eq!(key["source"], "stems");
+    assert_eq!(key["key"], "A minor");
+    assert!(accuracy >= 0.85, "chords right on {:.1} % of bars", accuracy * 100.0);
+}

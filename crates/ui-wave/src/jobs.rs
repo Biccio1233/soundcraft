@@ -86,6 +86,7 @@ impl WaveApp {
     }
 
     fn apply_done(&mut self, done: Done) {
+        let separated = matches!(done, Done::Separation(Ok(_)));
         let e = &mut self.engine;
         let result: Result<(Value, &str), String> = match done {
             Done::Analysis(d) => an::apply_analysis(e, d).map(|v| (v, "Analysis done")).map_err(|x| x.to_string()),
@@ -94,6 +95,7 @@ impl WaveApp {
             Done::Transcription(r) => r.and_then(|d| ml::apply_transcription(e, d).map_err(|x| x.to_string())).map(|v| (v, "Lyrics transcribed")),
             Done::Practice(r) => r.and_then(|d| ml::apply_practice(e, d).map_err(|x| x.to_string())).map(|v| (v, "Practice ready")),
         };
+        let reanalyze = separated && result.is_ok();
         self.status = match result {
             Ok((v, what)) => match v.get("words").and_then(Value::as_u64) {
                 Some(n) => format!("{what}: {n} words"),
@@ -101,11 +103,20 @@ impl WaveApp {
             },
             Err(err) => err,
         };
+        // Chords and key now come from the stems: the lanes on screen are analysed again.
+        if reanalyze {
+            crate::analysis::reanalyze(self);
+        }
     }
 
     /// `wave.analyze` on the selection (or the whole file), in the background.
     pub fn analyze_in_background(&mut self) {
-        match an::analysis_job(&self.engine, &json!({})) {
+        self.analyze_in_background_with(&json!({}));
+    }
+
+    /// `wave.analyze` with `params`, in the background.
+    pub(crate) fn analyze_in_background_with(&mut self, params: &Value) {
+        match an::analysis_job(&self.engine, params) {
             Ok(job) => self.start_job("Analyzing", move |report| {
                 let _ = report(0.0, "Analyzing");
                 Done::Analysis(job.run())
