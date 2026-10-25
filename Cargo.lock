@@ -4548,6 +4548,7 @@ dependencies = [
  "soundcraft-automation",
  "soundcraft-dsp",
  "soundcraft-engine",
+ "soundcraft-wave-analysis",
 ]
 
 [[package]]

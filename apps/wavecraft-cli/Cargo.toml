@@ -21,3 +21,4 @@ serde_json.workspace = true
 
 [dev-dependencies]
 soundcraft-audio-io.workspace = true
+soundcraft-wave-analysis.workspace = true
