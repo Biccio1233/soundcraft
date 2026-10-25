@@ -114,14 +114,20 @@ fn add(dst: &mut [f32], at: usize, src: &[f32], gain: f32) {
 
 /// Drums, bass, pad (Am F C G) and the voice as separate mono stems, with the words' true onsets.
 fn stems(d: &Path) -> ([Vec<f32>; 4], Vec<(String, f32)>) {
+    let starts: Vec<f32> = (0..PHRASES.len()).map(|i| FIRST_PHRASE_S + i as f32 * PHRASE_EVERY_S).collect();
+    stems_with(d, BARS, &starts)
+}
+
+/// The same band over `bars` bars, phrase `i` of [`PHRASES`] starting at `starts[i]` seconds.
+fn stems_with(d: &Path, bars: usize, starts: &[f32]) -> ([Vec<f32>; 4], Vec<(String, f32)>) {
     let beat = 60.0 / BPM;
     let bar = 4.0 * beat;
-    let len = ((BARS as f32 * bar + 1.0) * SR as f32) as usize;
-    let (mut dr, _) = drums(BPM, BARS, 4, SR);
+    let len = ((bars as f32 * bar + 1.0) * SR as f32) as usize;
+    let (mut dr, _) = drums(BPM, bars, 4, SR);
     dr.resize(len, 0.0);
     let (mut bass, mut pad) = (vec![0.0f32; len], vec![0.0f32; len]);
     let prog: [(f32, [f32; 3]); 4] = [(45.0, [57.0, 60.0, 64.0]), (41.0, [57.0, 60.0, 65.0]), (48.0, [55.0, 60.0, 64.0]), (43.0, [55.0, 59.0, 62.0])];
-    for b in 0..BARS {
+    for b in 0..bars {
         let (root, triad) = prog[b % 4];
         let at = (b as f32 * bar * SR as f32) as usize;
         add(&mut pad, at, &chord(&triad, bar, 440.0, SR), 0.8);
@@ -131,8 +137,8 @@ fn stems(d: &Path) -> ([Vec<f32>; 4], Vec<(String, f32)>) {
     }
     let mut voice = vec![0.0f32; len];
     let mut truth = Vec::new();
-    for (i, phrase) in PHRASES.iter().enumerate() {
-        let mut t = FIRST_PHRASE_S + i as f32 * PHRASE_EVERY_S;
+    for (phrase, &start) in PHRASES.iter().zip(starts) {
+        let mut t = start;
         for word in phrase.split_whitespace() {
             let w = tts(d, word);
             add(&mut voice, (t * SR as f32) as usize, &w, 1.0);
@@ -210,4 +216,45 @@ fn models_meet_the_f2_targets() {
     );
     assert!(vocal_sdr >= 6.0, "vocal SDR {vocal_sdr:.2} dB");
     assert!(share >= 0.9, "only {:.1} % of the words aligned", share * 100.0);
+}
+
+/// Heard words of `wave.lyrics` with their start times.
+fn heard_words(lyrics: &Value) -> Vec<(String, f32)> {
+    lyrics["lines"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|l| l["words"].as_array().unwrap().iter().map(|w| (w["text"].as_str().unwrap().to_string(), w["start"].as_f64().unwrap() as f32)))
+        .collect()
+}
+
+#[test]
+#[ignore = "needs the htdemucs and default Whisper models and macOS `say`"]
+fn long_instrumental_passages_add_no_words() {
+    // 32 s of band before the voice, three phrases, 35 s of band, three phrases.
+    let d = dir("acceptance_f2b_instrumental");
+    let starts = [32.0, 38.0, 44.0, 85.0, 91.0, 97.0];
+    let ([dr, bass, pad, voice], truth) = stems_with(&d, 44, &starts);
+    let mix: Vec<f32> = (0..voice.len()).map(|i| dr[i] + bass[i] + pad[i] + voice[i]).collect();
+    let src = d.join("mix.wav");
+    write_wav(&src, SR, vec![mix.clone(), mix]);
+    let first_gap_end = 32.0 - 0.5;
+    let last_of_first_half = truth.iter().filter(|(_, t)| *t < 60.0).map(|(_, t)| *t).fold(0.0f32, f32::max);
+    let (gap_from, gap_to) = (last_of_first_half + 2.5, 85.0 - 0.5);
+    for language in ["it", "auto"] {
+        let results = script(
+            &d,
+            &format!(
+                "wave.open {{\"path\": \"{}\"}}\nwave.separate_stems {{\"model\": 4}}\nwave.transcribe {{\"language\": \"{language}\"}}\nwave.lyrics {{}}\n",
+                src.to_str().unwrap()
+            ),
+        );
+        let heard = heard_words(result(&results, "wave.lyrics"));
+        println!("{language}: {}", heard.iter().map(|(w, t)| format!("{w}@{t:.2}")).collect::<Vec<_>>().join(" "));
+        let phantom: Vec<&(String, f32)> = heard.iter().filter(|(_, t)| *t < first_gap_end || (*t > gap_from && *t < gap_to)).collect();
+        let found = aligned(&truth, &heard);
+        println!("{language}: {found}/{} words aligned, {} in the instrumental passages", truth.len(), phantom.len());
+        assert!(phantom.is_empty(), "{language}: words in the instrumental passages: {phantom:?}");
+        assert!(found as f32 >= 0.9 * truth.len() as f32, "{language}: only {found}/{} words", truth.len());
+    }
 }
