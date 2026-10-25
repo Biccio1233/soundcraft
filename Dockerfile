@@ -10,4 +10,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 RUN rustup component add rustfmt clippy && rustup target add wasm32-unknown-unknown
 ENV CARGO_TARGET_DIR=/target
+# whisper.cpp's ggml builds for the generic CPU: `-mcpu=native` inside Docker on Apple silicon makes
+# GCC 12 refuse its fp16 intrinsics ("target specific option mismatch").
+ENV GGML_NATIVE=OFF
 WORKDIR /src
