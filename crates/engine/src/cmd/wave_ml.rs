@@ -255,6 +255,28 @@ fn fresh_stems(e: &Engine) -> Option<&Stems> {
     e.wave.as_ref()?.stems.as_ref().filter(|s| s.audio == audio)
 }
 
+/// Whether current stems with a harmonic part exist (cheap: nothing is summed).
+pub fn has_harmonic_stems(e: &Engine) -> bool {
+    fresh_stems(e).is_some_and(|s| s.stems.iter().any(|st| st.name != "vocals" && st.name != "drums"))
+}
+
+/// The harmonic part of the current stems — everything but the vocals and the drums — summed: what
+/// chords and key are best read from.
+pub fn harmonic_stems(e: &Engine) -> Option<Vec<Vec<f32>>> {
+    let stems = fresh_stems(e)?;
+    let parts: Vec<&Stem> = stems.stems.iter().filter(|s| s.name != "vocals" && s.name != "drums").collect();
+    let first = parts.first()?;
+    let mut sum: Vec<Vec<f32>> = first.channels.iter().map(|c| vec![0.0f32; c.len()]).collect();
+    for s in &parts {
+        for (acc, c) in sum.iter_mut().zip(&s.channels) {
+            for (a, v) in acc.iter_mut().zip(c) {
+                *a += v;
+            }
+        }
+    }
+    Some(sum)
+}
+
 fn mono_16k(channels: &[Vec<f32>], sample_rate: u32) -> Vec<f32> {
     let n = channels.iter().map(Vec::len).min().unwrap_or(0);
     let scale = 1.0 / channels.len().max(1) as f32;
@@ -621,6 +643,20 @@ mod tests {
         let file = super::super::wave::render_file(&e).unwrap();
         // other ×2 = half the mix.
         assert!((p.channels[0][1000] - 0.5 * file[0][1000]).abs() < 1e-5);
+    }
+
+    #[test]
+    fn chords_come_from_the_harmonic_stems_once_separated() {
+        let (mut e, _, fake) = take("ml_harmonic");
+        *fake.installed.lock().unwrap() = true;
+        assert_eq!(run(&mut e, "wave.analyze", json!({}))["source"], "mix");
+        run(&mut e, "wave.separate_stems", json!({}));
+        assert_eq!(run(&mut e, "wave.analysis_info", json!({}))["stale"], true, "an analysis of the mix is superseded by the stems");
+        assert_eq!(run(&mut e, "wave.analyze_key", json!({}))["source"], "stems");
+        let harmonic = harmonic_stems(&e).expect("harmonic stems");
+        // Fake stems are quarters of the mix: other + bass = half of it.
+        let file = super::super::wave::render_file(&e).unwrap();
+        assert!((harmonic[0][500] - 0.5 * file[0][500]).abs() < 1e-6);
     }
 
     #[test]

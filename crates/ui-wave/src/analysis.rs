@@ -62,7 +62,8 @@ impl Default for View {
 /// The analysis the screen can show: present, not stale.
 fn current(app: &WaveApp) -> Option<&Analysis> {
     let a = app.engine.wave.as_ref()?.analysis.as_ref()?;
-    (a.audio == soundcraft_engine::cmd::wave::audio_key(&app.engine)).then_some(a)
+    let stems = soundcraft_engine::cmd::wave_ml::has_harmonic_stems(&app.engine);
+    (a.audio == soundcraft_engine::cmd::wave::audio_key(&app.engine) && a.from_stems == stems).then_some(a)
 }
 
 fn grid_name(g: Grid) -> &'static str {

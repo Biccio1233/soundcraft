@@ -38,6 +38,8 @@ pub struct Analysis {
     pub chords: Vec<ChordSegment>,
     pub sections: Vec<Section>,
     pub chroma: Chroma,
+    /// Chords, key and tuning were read from the harmonic stems (else from the mix).
+    pub from_stems: bool,
 }
 
 /// Words heard with their times (file times), and supplied lyrics aligned to them.
@@ -166,7 +168,8 @@ fn capo_param(cmd: &str, p: &Value, auto: bool) -> Result<Option<u8>> {
 fn ensure(e: &mut Engine, cmd: &str, p: &Value) -> Result<()> {
     let explicit = ["start", "end", "length"].iter().any(|k| p.get(k).is_some());
     let audio = audio_key(e);
-    let kept = wave(e)?.analysis.as_ref().filter(|a| a.audio == audio).map(|a| a.range);
+    let stems = super::wave_ml::has_harmonic_stems(e);
+    let kept = wave(e)?.analysis.as_ref().filter(|a| a.audio == audio && a.from_stems == stems).map(|a| a.range);
     let range = match kept {
         Some(r) if !explicit && cmd != "wave.analyze" => r,
         _ => wave_range(e, cmd, p)?,
@@ -175,7 +178,7 @@ fn ensure(e: &mut Engine, cmd: &str, p: &Value) -> Result<()> {
         return Err(bad(cmd, "the range is empty"));
     }
     let w = wave(e)?;
-    let fresh = w.analysis.as_ref().filter(|a| a.audio == audio && a.range == range);
+    let fresh = w.analysis.as_ref().filter(|a| a.audio == audio && a.range == range && a.from_stems == stems);
     let grid = grid_param(cmd, p, fresh.map(|a| a.grid))?;
     let bpb = match int_param(cmd, p, "beats_per_bar", 2..=7)? {
         Some(v) => Some(v as u8),
@@ -205,6 +208,8 @@ fn ensure(e: &mut Engine, cmd: &str, p: &Value) -> Result<()> {
 /// An analysis, runnable off the UI thread ([`AnalysisJob::run`], then [`apply_analysis`]).
 pub struct AnalysisJob {
     part: Vec<Vec<f32>>,
+    /// The harmonic stems over the same range, when current stems exist.
+    harmonic: Option<Vec<Vec<f32>>>,
     sample_rate: u32,
     range: Range,
     grid: Grid,
@@ -222,8 +227,10 @@ fn new_job(e: &Engine, range: Range, grid: Grid, beats_per_bar: Option<u8>) -> R
     let w = wave(e)?;
     let file = render_file(e)?;
     let (from, to) = (usize::try_from(range.start).unwrap_or(0), usize::try_from(range.end).unwrap_or(0));
-    let part = file.iter().map(|c| c.get(from..to.min(c.len())).unwrap_or(&[]).to_vec()).collect();
-    Ok(AnalysisJob { part, sample_rate: w.sample_rate, range, grid, beats_per_bar, audio: audio_key(e), path: w.path.clone() })
+    let slice = |chs: &[Vec<f32>]| -> Vec<Vec<f32>> { chs.iter().map(|c| c.get(from..to.min(c.len())).unwrap_or(&[]).to_vec()).collect() };
+    let part = slice(&file);
+    let harmonic = super::wave_ml::harmonic_stems(e).map(|h| slice(&h));
+    Ok(AnalysisJob { part, harmonic, sample_rate: w.sample_rate, range, grid, beats_per_bar, audio: audio_key(e), path: w.path.clone() })
 }
 
 /// The job `wave.analyze` would run with `p` (the selection or the whole file).
@@ -242,9 +249,13 @@ impl AnalysisJob {
     pub fn run(self) -> AnalysisDone {
         let sr = self.sample_rate;
         let x = analysis_signal(&self.part, sr);
-        let tuning = tuning::estimate(&x, ANALYSIS_RATE);
+        // Harmony (tuning, chroma: chords, key) from the harmonic stems when there are some — the
+        // voice and the drums blur it — while tempo and sections keep the whole mix.
+        let harmonic = self.harmonic.as_ref().map(|h| analysis_signal(h, sr));
+        let tonal = harmonic.as_ref().unwrap_or(&x);
+        let tuning = tuning::estimate(tonal, ANALYSIS_RATE);
         let cents = if tuning.confidence >= TUNING_TRUSTED { tuning.cents } else { 0.0 };
-        let chroma = chroma::compute(&x, ANALYSIS_RATE, cents);
+        let chroma = chroma::compute(tonal, ANALYSIS_RATE, cents);
         let tempo = tempo::analyze(&x, ANALYSIS_RATE, Some(&chroma), self.beats_per_bar);
         let chords = soundcraft_wave_analysis::chords::recognize(&chroma, &tempo, self.grid);
         let key = keys::estimate(&keys::profile(&chroma)).map(|k| soundcraft_wave_analysis::chords::settle_key(k, &chords));
@@ -263,6 +274,7 @@ impl AnalysisJob {
             chords,
             sections,
             chroma,
+            from_stems: harmonic.is_some(),
         };
         AnalysisDone { analysis, path: self.path }
     }
@@ -388,6 +400,7 @@ fn analysis_json(e: &Engine) -> Result<Value> {
         "key": key_json(a),
         "chords": chords_json(a, 3, 0),
         "sections": sections_json(a),
+        "source": source(a),
         "stale": false,
     }))
 }
@@ -404,8 +417,18 @@ fn analyze_tempo(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn analyze_key(e: &mut Engine, p: &Value) -> Result<Value> {
     ensure(e, "wave.analyze_key", p)?;
-    let k = key_json(current(e)?);
-    Ok(if k.is_null() { json!({"key": null}) } else { k })
+    let a = current(e)?;
+    let mut k = key_json(a);
+    if k.is_null() {
+        k = json!({"key": null});
+    }
+    k["source"] = json!(source(a));
+    Ok(k)
+}
+
+/// Where chords, key and tuning were read: "stems" (the harmonic stems) or "mix".
+fn source(a: &Analysis) -> &'static str {
+    if a.from_stems { "stems" } else { "mix" }
 }
 
 fn analyze_chords(e: &mut Engine, p: &Value) -> Result<Value> {
@@ -430,8 +453,9 @@ fn view_analysis(e: &mut Engine, p: &Value) -> Result<Value> {
 
 fn analysis_info(e: &mut Engine, _: &Value) -> Result<Value> {
     let audio = audio_key(e);
+    let stems = super::wave_ml::has_harmonic_stems(e);
     Ok(match &wave(e)?.analysis {
-        Some(a) => json!({"analyzed": true, "stale": a.audio != audio}),
+        Some(a) => json!({"analyzed": true, "stale": a.audio != audio || a.from_stems != stems, "source": source(a)}),
         None => json!({"analyzed": false}),
     })
 }
