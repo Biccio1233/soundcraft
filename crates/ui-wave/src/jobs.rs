@@ -1,10 +1,12 @@
 //! Long jobs — analysis, model downloads, separation, transcription, practice renders — run on a
 //! worker thread; the window stays live, the status line shows the progress, and the result is
-//! applied on the UI thread (refused when the file changed meanwhile). One job at a time.
+//! applied on the UI thread (refused when the file changed meanwhile). One job at a time; Cancel
+//! (`wave.cancel_job`) drops it at once and the worker stops at its next progress report.
 
 use crate::WaveApp;
 use serde_json::{Value, json};
 use soundcraft_engine::cmd::{wave_analysis as an, wave_ml as ml};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 
@@ -18,6 +20,7 @@ pub enum Done {
 
 pub struct Job {
     progress: Arc<Mutex<(f32, String)>>,
+    cancel: Arc<AtomicBool>,
     rx: Receiver<Done>,
 }
 
@@ -33,23 +36,37 @@ impl WaveApp {
         Some(format!("{label}… {:.0} %", (f * 100.0).clamp(0.0, 100.0)))
     }
 
-    fn start_job(&mut self, label: &str, work: impl FnOnce(&mut dyn FnMut(f32, &str)) -> Done + Send + 'static) {
+    /// Stop the running job: it is dropped now, its worker stops at its next progress report and
+    /// its result is never applied.
+    pub fn cancel_job(&mut self) {
+        if let Some(job) = self.job.take() {
+            job.cancel.store(true, Ordering::Relaxed);
+            self.status = "Cancelled".into();
+        }
+    }
+
+    fn start_job(&mut self, label: &str, work: impl FnOnce(&mut dyn FnMut(f32, &str) -> bool) -> Done + Send + 'static) {
         if self.job.is_some() {
             self.status = "a job is already running".into();
             return;
         }
         let (tx, rx) = channel();
         let progress = Arc::new(Mutex::new((0.0f32, label.to_string())));
-        let shared = Arc::clone(&progress);
-        std::thread::spawn(move || {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (shared, stop) = (Arc::clone(&progress), Arc::clone(&cancel));
+        let spawned = std::thread::Builder::new().name("wavecraft-job".into()).spawn(move || {
             let mut report = |f: f32, l: &str| {
                 if let Ok(mut g) = shared.lock() {
                     *g = (f, l.to_string());
                 }
+                !stop.load(Ordering::Relaxed)
             };
             let _ = tx.send(work(&mut report));
         });
-        self.job = Some(Job { progress, rx });
+        match spawned {
+            Ok(_) => self.job = Some(Job { progress, cancel, rx }),
+            Err(e) => self.status = format!("could not start the job: {e}"),
+        }
     }
 
     /// Apply the job's result when it is ready (called every frame).
@@ -90,7 +107,7 @@ impl WaveApp {
     pub fn analyze_in_background(&mut self) {
         match an::analysis_job(&self.engine, &json!({})) {
             Ok(job) => self.start_job("Analyzing", move |report| {
-                report(0.0, "Analyzing");
+                let _ = report(0.0, "Analyzing");
                 Done::Analysis(job.run())
             }),
             Err(err) => self.status = err.to_string(),

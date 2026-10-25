@@ -26,7 +26,7 @@ impl Backend {
         if !kind(&m.kind) {
             return Err(format!("{id} is not a {what} model"));
         }
-        let path = store::installed(&self.dir, m).ok_or_else(|| missing(m))?;
+        let path = store::verified(&self.dir, m)?;
         Ok((m, path))
     }
 }
@@ -52,15 +52,12 @@ impl Models for Backend {
         store::installed(&self.dir, model(id)?)
     }
 
-    fn download(&self, id: &str, progress: &mut dyn FnMut(u64, u64)) -> Result<PathBuf, String> {
+    fn download(&self, id: &str, progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<PathBuf, String> {
         let m = model(id).ok_or_else(|| format!("unknown model `{id}`"))?;
-        if let Some(p) = store::installed(&self.dir, m) {
-            return Ok(p);
-        }
-        store::download(&self.dir, m, m.url, progress)
+        store::ensure(&self.dir, m, m.url, store::STALL, progress)
     }
 
-    fn separate(&self, id: &str, channels: &[Vec<f32>], sample_rate: u32, progress: &mut dyn FnMut(f32)) -> Result<Vec<Stem>, String> {
+    fn separate(&self, id: &str, channels: &[Vec<f32>], sample_rate: u32, progress: &mut dyn FnMut(f32) -> bool) -> Result<Vec<Stem>, String> {
         let (m, path) = self.require(id, |k| matches!(k, ModelKind::Separation { .. }), "separation")?;
         let stems = match m.kind {
             ModelKind::Separation { stems } => usize::from(stems),

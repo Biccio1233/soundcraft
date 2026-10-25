@@ -56,11 +56,11 @@ fn transpose_moves_the_pitch() {
 #[test]
 fn missing_model_names_its_size() {
     let b = Backend::with_dir(empty_dir("missing_model"));
-    let err = b.separate("htdemucs", &[sine(440.0, 1.0)], SR, &mut |_| {}).unwrap_err();
+    let err = b.separate("htdemucs", &[sine(440.0, 1.0)], SR, &mut |_| true).unwrap_err();
     assert!(err.contains("htdemucs") && err.contains("169 MB"), "{err}");
     let err = b.transcribe(DEFAULT_WHISPER, &vec![0.0; 16_000], Some("it")).unwrap_err();
     assert!(err.contains(DEFAULT_WHISPER) && err.contains("574 MB"), "{err}");
-    assert!(b.separate("whisper-tiny", &[sine(440.0, 1.0)], SR, &mut |_| {}).is_err(), "a transcription model cannot separate");
+    assert!(b.separate("whisper-tiny", &[sine(440.0, 1.0)], SR, &mut |_| true).is_err(), "a transcription model cannot separate");
     assert!(b.installed("nope").is_none());
 }
 
@@ -73,7 +73,7 @@ fn demucs_model_runs() {
     for (a, v) in x.iter_mut().zip(n) {
         *a += 0.05 * v;
     }
-    let stems = b.separate("htdemucs", &[x.clone(), x.clone()], SR, &mut |_| {}).unwrap();
+    let stems = b.separate("htdemucs", &[x.clone(), x.clone()], SR, &mut |_| true).unwrap();
     assert_eq!(stems.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["drums", "bass", "other", "vocals"]);
     let rms = |v: &[f32]| (v.iter().map(|s| s * s).sum::<f32>() / v.len() as f32).sqrt();
     let mut sum = vec![0.0f32; x.len()];
@@ -102,4 +102,16 @@ fn whisper_hears_italian() {
     let text: Vec<String> = words.iter().map(|w| w.text.to_lowercase()).collect();
     assert!(text.iter().any(|t| t.contains("buongiorno")), "{text:?}");
     assert!(words.windows(2).all(|w| w[1].start >= w[0].start));
+}
+
+#[test]
+fn damaged_model_never_reaches_the_runtime() {
+    // A file of whisper-tiny's exact size but the wrong bytes: whisper.cpp must never load it.
+    let d = empty_dir("damaged_whisper");
+    let m = soundcraft_wave_analysis::models::model("whisper-tiny").unwrap();
+    std::fs::File::create(d.join(m.file)).unwrap().set_len(m.bytes).unwrap();
+    let b = Backend::with_dir(d.clone());
+    let err = b.transcribe("whisper-tiny", &vec![0.0; 16_000], Some("it")).unwrap_err();
+    assert!(err.contains("damaged"), "{err}");
+    assert!(b.installed("whisper-tiny").is_none(), "offered for download again");
 }

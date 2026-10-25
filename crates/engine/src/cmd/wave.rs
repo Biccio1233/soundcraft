@@ -856,8 +856,10 @@ pub(crate) mod tests {
 
     #[test]
     fn wave_commands_survive_empty_params() {
-        // The model registry commands act on no file.
-        for spec in command_specs().iter().filter(|s| s.id.starts_with("wave.") && !matches!(s.id, "wave.models" | "wave.model_download")) {
+        // The model registry commands and Cancel Job act on no file.
+        for spec in
+            command_specs().iter().filter(|s| s.id.starts_with("wave.") && !matches!(s.id, "wave.models" | "wave.model_download" | "wave.cancel_job"))
+        {
             let mut e = Engine::default();
             assert!(e.execute(spec.id, &json!({})).is_err(), "{} should need an open file", spec.id);
         }

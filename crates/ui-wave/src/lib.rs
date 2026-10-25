@@ -195,6 +195,9 @@ impl WaveApp {
             soundcraft_ui_egui::theme::apply(ctx, false);
             self.styled = true;
         }
+        if std::mem::take(&mut self.engine.wave_cancel) {
+            self.cancel_job();
+        }
         self.poll_job(ctx);
         // The player plays the practice render while there is one, else the document.
         let practice = self.engine.wave.as_ref().and_then(|w| w.practice.as_ref()).map(|p| std::sync::Arc::clone(&p.session));
@@ -355,7 +358,12 @@ impl WaveApp {
             } else {
                 self.status.clone()
             };
-            ui.label(egui::RichText::new(text).color(t.text_dim));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(text).color(t.text_dim));
+                if self.job_running() && ui.small_button("Cancel").clicked() {
+                    self.run("wave.cancel_job", json!({}));
+                }
+            });
         });
         egui::Panel::bottom("wave_bottom").resizable(false).show(ui, |ui| {
             ui.horizontal(|ui| {

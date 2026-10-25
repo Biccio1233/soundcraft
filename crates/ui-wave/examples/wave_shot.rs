@@ -90,10 +90,16 @@ impl soundcraft_wave_analysis::models::Models for FakeModels {
     fn installed(&self, id: &str) -> Option<std::path::PathBuf> {
         matches!(id, "htdemucs" | "whisper-large-v3-turbo-q5_0").then(|| std::path::PathBuf::from("/fake"))
     }
-    fn download(&self, _: &str, _: &mut dyn FnMut(u64, u64)) -> Result<std::path::PathBuf, String> {
+    fn download(&self, _: &str, _: &mut dyn FnMut(u64, u64) -> bool) -> Result<std::path::PathBuf, String> {
         Err("downloads are off in screenshots".into())
     }
-    fn separate(&self, _: &str, ch: &[Vec<f32>], _: u32, _: &mut dyn FnMut(f32)) -> Result<Vec<soundcraft_wave_analysis::models::Stem>, String> {
+    fn separate(
+        &self,
+        _: &str,
+        ch: &[Vec<f32>],
+        _: u32,
+        _: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Vec<soundcraft_wave_analysis::models::Stem>, String> {
         Ok(["drums", "bass", "other", "vocals"]
             .iter()
             .map(|n| soundcraft_wave_analysis::models::Stem {

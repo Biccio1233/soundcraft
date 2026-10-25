@@ -147,6 +147,8 @@ pub struct Engine {
     pub wave_clipboard: Option<cmd::wave_edit::WaveClip>,
     /// The model runtime (stems, transcription, practice preview), when the app provides one.
     pub wave_models: Option<Arc<dyn soundcraft_wave_analysis::models::Models>>,
+    /// Set by `wave.cancel_job`: the WaveCraft app stops its running background job and clears it.
+    pub wave_cancel: bool,
 }
 
 impl Default for Engine {
@@ -181,6 +183,7 @@ impl Engine {
             wave: None,
             wave_clipboard: None,
             wave_models: None,
+            wave_cancel: false,
         }
     }
 

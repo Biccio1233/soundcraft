@@ -437,10 +437,16 @@ impl soundcraft_wave_analysis::models::Models for Fake {
     fn installed(&self, _: &str) -> Option<std::path::PathBuf> {
         Some(std::path::PathBuf::from("/fake"))
     }
-    fn download(&self, _: &str, _: &mut dyn FnMut(u64, u64)) -> Result<std::path::PathBuf, String> {
+    fn download(&self, _: &str, _: &mut dyn FnMut(u64, u64) -> bool) -> Result<std::path::PathBuf, String> {
         Ok(std::path::PathBuf::from("/fake"))
     }
-    fn separate(&self, _: &str, ch: &[Vec<f32>], _: u32, _: &mut dyn FnMut(f32)) -> Result<Vec<soundcraft_wave_analysis::models::Stem>, String> {
+    fn separate(
+        &self,
+        _: &str,
+        ch: &[Vec<f32>],
+        _: u32,
+        _: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Vec<soundcraft_wave_analysis::models::Stem>, String> {
         Ok(["drums", "bass", "other", "vocals"]
             .iter()
             .map(|n| soundcraft_wave_analysis::models::Stem {
@@ -494,6 +500,69 @@ fn separation_job_runs_off_the_ui_thread() {
     let stems = exec(&mut h, "wave.stems", json!({}));
     assert_eq!(stems["stems"].as_array().map(Vec::len), Some(4), "{stems}");
     assert!(h.query_all_by_label_contains("vocals").next().is_some(), "the window lists the stems");
+}
+
+/// The fake runtime, with a separation that keeps reporting progress until it is told to stop
+/// (or 10 s pass), and records that it stopped.
+struct Slow(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl soundcraft_wave_analysis::models::Models for Slow {
+    fn installed(&self, id: &str) -> Option<std::path::PathBuf> {
+        Fake.installed(id)
+    }
+    fn download(&self, id: &str, p: &mut dyn FnMut(u64, u64) -> bool) -> Result<std::path::PathBuf, String> {
+        Fake.download(id, p)
+    }
+    fn separate(
+        &self,
+        _: &str,
+        _: &[Vec<f32>],
+        _: u32,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<Vec<soundcraft_wave_analysis::models::Stem>, String> {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < std::time::Duration::from_secs(10) {
+            if !progress(0.5) {
+                self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+                return Err("separation cancelled".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        Err("never cancelled".into())
+    }
+    fn transcribe(&self, id: &str, x: &[f32], l: Option<&str>) -> Result<Vec<soundcraft_wave_analysis::lyrics::Word>, String> {
+        Fake.transcribe(id, x, l)
+    }
+    fn stretch(&self, ch: &[Vec<f32>], sr: u32, tempo: f32, st: f32) -> Result<Vec<Vec<f32>>, String> {
+        Fake.stretch(ch, sr, tempo, st)
+    }
+}
+
+#[test]
+fn a_running_job_can_be_cancelled() {
+    let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut e = song_opened("ml_ui_cancel");
+    e.wave_models = Some(std::sync::Arc::new(Slow(stopped.clone())));
+    let mut h = harness(e);
+    menu(&mut h, "Separate Stems…");
+    h.get_by_label("Separate").click();
+    h.step();
+    h.step();
+    assert!(h.state().job_running());
+    h.get_by_label("Cancel").click();
+    // The click runs wave.cancel_job; the app acts on the request at the start of the next frame.
+    h.step();
+    h.step();
+    assert!(!h.state().job_running());
+    for _ in 0..200 {
+        if stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(stopped.load(std::sync::atomic::Ordering::SeqCst), "the worker kept going");
+    let stems = exec(&mut h, "wave.stems", json!({}));
+    assert_eq!(stems["stems"].as_array().map(Vec::len), Some(0), "a cancelled separation is not applied: {stems}");
 }
 
 #[test]

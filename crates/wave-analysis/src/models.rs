@@ -104,11 +104,12 @@ pub struct Stem {
 pub trait Models: Send + Sync {
     /// Where model `id` is, when it is installed (present with the right size).
     fn installed(&self, id: &str) -> Option<PathBuf>;
-    /// Download model `id` (size and sha256 checked); `progress(done, total)` in bytes.
-    fn download(&self, id: &str, progress: &mut dyn FnMut(u64, u64)) -> Result<PathBuf, String>;
+    /// Model `id` checked by size and sha256, downloaded when missing or damaged;
+    /// `progress(done, total)` in bytes returns false to cancel.
+    fn download(&self, id: &str, progress: &mut dyn FnMut(u64, u64) -> bool) -> Result<PathBuf, String>;
     /// Separate `channels` (at `sample_rate`) with separation model `id`: stems of the same length,
-    /// rate and channel count; `progress` from 0 to 1.
-    fn separate(&self, id: &str, channels: &[Vec<f32>], sample_rate: u32, progress: &mut dyn FnMut(f32)) -> Result<Vec<Stem>, String>;
+    /// rate and channel count; `progress` from 0 to 1 returns false to cancel.
+    fn separate(&self, id: &str, channels: &[Vec<f32>], sample_rate: u32, progress: &mut dyn FnMut(f32) -> bool) -> Result<Vec<Stem>, String>;
     /// The words in `mono_16k` (16 kHz mono) with their times in seconds; `language` "it", "en", or
     /// `None` to detect it.
     fn transcribe(&self, id: &str, mono_16k: &[f32], language: Option<&str>) -> Result<Vec<Word>, String>;

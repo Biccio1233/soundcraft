@@ -153,16 +153,17 @@ fn transition_weight() -> Vec<f32> {
 /// FRAMES]`, returning `(spec, wav)` = `([1, S, 4, BINS, FRAMES], [1, S, 2, SEGMENT])`.
 pub type Network<'a> = dyn FnMut(&[f32], &[f32]) -> Result<(Vec<f32>, Vec<f32>), String> + 'a;
 
-/// Separate a stereo 44.1 kHz signal into `sources` stereo stems of the same length.
+/// Separate a stereo 44.1 kHz signal into `sources` stereo stems of the same length; `progress`
+/// (0 to 1, after each segment) returns false to cancel.
 pub fn separate_with(
     stereo_44k: &[Vec<f32>; 2],
     sources: usize,
     net: &mut Network,
-    progress: &mut dyn FnMut(f32),
+    progress: &mut dyn FnMut(f32) -> bool,
 ) -> Result<Vec<[Vec<f32>; 2]>, String> {
     let total = stereo_44k[0].len().min(stereo_44k[1].len());
     if total == 0 || sources == 0 {
-        progress(1.0);
+        let _ = progress(1.0);
         return Ok((0..sources).map(|_| [Vec::new(), Vec::new()]).collect());
     }
     let clean = |v: f32| if v.is_finite() { v } else { 0.0 };
@@ -225,7 +226,9 @@ pub fn separate_with(
                 *o += w;
             }
         }
-        progress((k + 1) as f32 / offsets.len() as f32);
+        if !progress((k + 1) as f32 / offsets.len() as f32) {
+            return Err("separation cancelled".into());
+        }
     }
     for stem in acc.iter_mut() {
         for ch in stem.iter_mut() {

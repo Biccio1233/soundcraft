@@ -18,6 +18,7 @@ use std::sync::Arc;
 
 const NO_MODELS: &str = "this build has no model support (use wavecraft or wavecraft-cli)";
 const STALE: &str = "discarded: the file changed while the job ran";
+const CANCELLED: &str = "cancelled";
 const LANGUAGES: [&str; 3] = ["it", "en", "auto"];
 
 /// The stems separated from the file and where they were written.
@@ -75,6 +76,15 @@ pub fn specs() -> Vec<CommandSpec> {
             has_file,
             practice
         ),
+        cmd!(
+            noundo "wave.cancel_job",
+            "Cancel Job",
+            [],
+            None,
+            "{} — stop the app's running background job (model download, separation, transcription, practice render, analysis); the command line runs jobs in line, so there is nothing to stop there",
+            always,
+            cancel_job
+        ),
         cmd!(noundo "wave.practice_off", "Practice Off", [], None, "{} — drop the practice render and play the file again", has_file, practice_off),
         cmd!(query "wave.practice_export", "Export Practice", [], None, "{path, bit_depth?: 16|24|32|\"32f\" (default 24)} — write the practice render as WAV/AIFF/FLAC", has_file, practice_export),
     ]
@@ -99,13 +109,14 @@ fn check(e: &Engine, o: &Origin) -> Result<()> {
     if e.wave.as_ref().map(|w| &w.path) == Some(&o.path) && audio_key(e) == o.audio { Ok(()) } else { Err(EngineError::NotFound(STALE.into())) }
 }
 
-/// Make sure model `id` is installed, downloading it when `download` allows.
-fn ensure_model(backend: &dyn Models, id: &str, download: bool, progress: &mut dyn FnMut(f32, &str)) -> std::result::Result<(), String> {
-    if backend.installed(id).is_some() {
-        return Ok(());
-    }
+/// Make sure model `id` is installed; with `download`, also checked and fetched again when missing
+/// or damaged.
+fn ensure_model(backend: &dyn Models, id: &str, download: bool, progress: &mut dyn FnMut(f32, &str) -> bool) -> std::result::Result<(), String> {
     let m = model(id).ok_or_else(|| format!("unknown model `{id}`"))?;
     if !download {
+        if backend.installed(id).is_some() {
+            return Ok(());
+        }
         return Err(format!(
             "model {} ({} MB) is not installed: run wave.model_download {{\"id\": \"{}\"}} or pass download: true",
             m.id,
@@ -146,14 +157,14 @@ pub fn download_job(e: &Engine, p: &Value) -> Result<DownloadJob> {
 }
 
 impl DownloadJob {
-    pub fn run(self, progress: &mut dyn FnMut(f32, &str)) -> std::result::Result<Value, String> {
+    pub fn run(self, progress: &mut dyn FnMut(f32, &str) -> bool) -> std::result::Result<Value, String> {
         ensure_model(self.backend.as_ref(), &self.id, true, progress)?;
         Ok(json!({"id": self.id, "path": self.backend.installed(&self.id).map(|p| p.to_string_lossy().to_string())}))
     }
 }
 
 fn model_download(e: &mut Engine, p: &Value) -> Result<Value> {
-    download_job(e, p)?.run(&mut |_, _| {}).map_err(EngineError::Io)
+    download_job(e, p)?.run(&mut |_, _| true).map_err(EngineError::Io)
 }
 
 /// A separation, runnable off the UI thread.
@@ -206,10 +217,13 @@ pub fn separation_job(e: &Engine, p: &Value) -> Result<SeparationJob> {
 }
 
 impl SeparationJob {
-    pub fn run(self, progress: &mut dyn FnMut(f32, &str)) -> std::result::Result<SeparationDone, String> {
+    pub fn run(self, progress: &mut dyn FnMut(f32, &str) -> bool) -> std::result::Result<SeparationDone, String> {
         ensure_model(self.backend.as_ref(), &self.model, self.download, progress)?;
         let label = format!("Separating ({})", self.model);
         let stems = self.backend.separate(&self.model, &self.channels, self.sample_rate, &mut |f| progress(f * 0.95, &label))?;
+        if !progress(0.95, &label) {
+            return Err(CANCELLED.into());
+        }
         io::make_dir(&self.dir).map_err(|e| e.to_string())?;
         let opts = EncodeOptions { format: FileFormat::Wav, bit_depth: BitDepth::Float32, dither: false, bwf: None };
         let mut files = Vec::with_capacity(stems.len());
@@ -218,7 +232,7 @@ impl SeparationJob {
             io::write_audio_file(&path, &opts, &s.channels, self.sample_rate).map_err(|e| e.to_string())?;
             files.push((s.name.clone(), path));
         }
-        progress(1.0, &label);
+        let _ = progress(1.0, &label);
         Ok(SeparationDone {
             stems: Stems { audio: self.origin.audio, model: self.model, dir: self.dir.to_string_lossy().to_string(), files, stems },
             origin: self.origin,
@@ -240,7 +254,7 @@ pub fn apply_separation(e: &mut Engine, done: SeparationDone) -> Result<Value> {
 }
 
 fn separate_stems(e: &mut Engine, p: &Value) -> Result<Value> {
-    let done = separation_job(e, p)?.run(&mut |_, _| {}).map_err(EngineError::Io)?;
+    let done = separation_job(e, p)?.run(&mut |_, _| true).map_err(EngineError::Io)?;
     apply_separation(e, done)
 }
 
@@ -325,11 +339,13 @@ pub fn transcription_job(e: &Engine, p: &Value) -> Result<TranscriptionJob> {
 }
 
 impl TranscriptionJob {
-    pub fn run(self, progress: &mut dyn FnMut(f32, &str)) -> std::result::Result<TranscriptionDone, String> {
+    pub fn run(self, progress: &mut dyn FnMut(f32, &str) -> bool) -> std::result::Result<TranscriptionDone, String> {
         ensure_model(self.backend.as_ref(), &self.model, self.download, progress)?;
-        progress(0.0, "Transcribing");
+        let _ = progress(0.0, "Transcribing");
         let words = self.backend.transcribe(&self.model, &self.audio_16k, self.language.as_deref())?;
-        progress(1.0, "Transcribing");
+        if !progress(1.0, "Transcribing") {
+            return Err(CANCELLED.into());
+        }
         Ok(TranscriptionDone { words, source: self.source, origin: self.origin })
     }
 }
@@ -350,7 +366,7 @@ pub fn apply_transcription(e: &mut Engine, done: TranscriptionDone) -> Result<Va
 }
 
 fn transcribe(e: &mut Engine, p: &Value) -> Result<Value> {
-    let done = transcription_job(e, p)?.run(&mut |_, _| {}).map_err(EngineError::Io)?;
+    let done = transcription_job(e, p)?.run(&mut |_, _| true).map_err(EngineError::Io)?;
     apply_transcription(e, done)
 }
 
@@ -436,11 +452,13 @@ fn practice_session(channels: &[Vec<f32>], sample_rate: u32) -> std::result::Res
 }
 
 impl PracticeJob {
-    pub fn run(self, progress: &mut dyn FnMut(f32, &str)) -> std::result::Result<PracticeDone, String> {
-        progress(0.0, "Rendering practice");
+    pub fn run(self, progress: &mut dyn FnMut(f32, &str) -> bool) -> std::result::Result<PracticeDone, String> {
+        let _ = progress(0.0, "Rendering practice");
         let out = self.backend.stretch(&self.channels, self.sample_rate, self.tempo / 100.0, self.semitones)?;
+        if !progress(1.0, "Rendering practice") {
+            return Err(CANCELLED.into());
+        }
         let session = practice_session(&out, self.sample_rate)?;
-        progress(1.0, "Rendering practice");
         Ok(PracticeDone {
             practice: Practice {
                 tempo: self.tempo,
@@ -467,8 +485,13 @@ pub fn apply_practice(e: &mut Engine, done: PracticeDone) -> Result<Value> {
 }
 
 fn practice(e: &mut Engine, p: &Value) -> Result<Value> {
-    let done = practice_job(e, p)?.run(&mut |_, _| {}).map_err(EngineError::Io)?;
+    let done = practice_job(e, p)?.run(&mut |_, _| true).map_err(EngineError::Io)?;
     apply_practice(e, done)
+}
+
+fn cancel_job(e: &mut Engine, _: &Value) -> Result<Value> {
+    e.wave_cancel = true;
+    Ok(json!({"requested": true}))
 }
 
 fn practice_off(e: &mut Engine, _: &Value) -> Result<Value> {
@@ -510,6 +533,8 @@ mod tests {
     #[derive(Default)]
     struct Fake {
         installed: Mutex<bool>,
+        /// Installed with the right size but the wrong bytes: only a download repairs it.
+        damaged: Mutex<bool>,
         downloads: AtomicUsize,
         transcribed_peak: Mutex<f32>,
     }
@@ -518,19 +543,28 @@ mod tests {
         fn installed(&self, _: &str) -> Option<PathBuf> {
             self.installed.lock().ok().filter(|i| **i).map(|_| PathBuf::from("/fake"))
         }
-        fn download(&self, _: &str, progress: &mut dyn FnMut(u64, u64)) -> std::result::Result<PathBuf, String> {
+        fn download(&self, id: &str, progress: &mut dyn FnMut(u64, u64) -> bool) -> std::result::Result<PathBuf, String> {
+            let damaged = self.damaged.lock().is_ok_and(|mut d| std::mem::take(&mut *d));
+            if !damaged && self.installed(id).is_some() {
+                return Ok(PathBuf::from("/fake"));
+            }
             self.downloads.fetch_add(1, Ordering::SeqCst);
-            progress(1, 1);
+            let _ = progress(1, 1);
             if let Ok(mut i) = self.installed.lock() {
                 *i = true;
             }
             Ok(PathBuf::from("/fake"))
         }
-        fn separate(&self, id: &str, ch: &[Vec<f32>], _: u32, progress: &mut dyn FnMut(f32)) -> std::result::Result<Vec<Stem>, String> {
+        fn separate(&self, id: &str, ch: &[Vec<f32>], _: u32, progress: &mut dyn FnMut(f32) -> bool) -> std::result::Result<Vec<Stem>, String> {
             if self.installed(id).is_none() {
                 return Err(format!("model {id} (169 MB) is not installed"));
             }
-            progress(1.0);
+            if self.damaged.lock().is_ok_and(|d| *d) {
+                return Err(format!("model {id} (169 MB) is damaged"));
+            }
+            if !progress(1.0) {
+                return Err("separation cancelled".into());
+            }
             Ok(["drums", "bass", "other", "vocals"]
                 .iter()
                 .map(|n| Stem { name: n.to_string(), channels: ch.iter().map(|c| c.iter().map(|v| v * 0.25).collect()).collect() })
@@ -600,6 +634,17 @@ mod tests {
     }
 
     #[test]
+    fn download_true_repairs_a_damaged_model() {
+        let (mut e, _, fake) = take("ml_damaged");
+        *fake.installed.lock().unwrap() = true;
+        *fake.damaged.lock().unwrap() = true;
+        let err = e.execute("wave.separate_stems", &json!({})).unwrap_err().to_string();
+        assert!(err.contains("damaged"), "{err}");
+        run(&mut e, "wave.separate_stems", json!({"download": true}));
+        assert_eq!(fake.downloads.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
     fn transcribe_prefers_the_vocals_stem_and_sets_words() {
         let (mut e, _, fake) = take("ml_transcribe");
         *fake.installed.lock().unwrap() = true;
@@ -660,11 +705,28 @@ mod tests {
     }
 
     #[test]
+    fn cancelled_jobs_stop() {
+        let (mut e, _, fake) = take("ml_cancel");
+        *fake.installed.lock().unwrap() = true;
+        let p = json!({});
+        let sep = separation_job(&e, &p).unwrap().run(&mut |_, _| false).err().unwrap_or_default();
+        let tr = transcription_job(&e, &p).unwrap().run(&mut |_, _| false).err().unwrap_or_default();
+        let pr = practice_job(&e, &json!({"tempo": 80})).unwrap().run(&mut |_, _| false).err().unwrap_or_default();
+        for err in [sep, tr, pr] {
+            assert!(err.contains("cancelled"), "{err}");
+        }
+        assert!(e.wave.as_ref().unwrap().stems.is_none());
+        let r = run(&mut e, "wave.cancel_job", json!({}));
+        assert_eq!(r["requested"], true);
+        assert!(e.wave_cancel, "the app cancels its running job when it sees the request");
+    }
+
+    #[test]
     fn stale_job_results_are_refused() {
         let (mut e, _, fake) = take("ml_stale");
         *fake.installed.lock().unwrap() = true;
         let job = separation_job(&e, &json!({})).unwrap();
-        let done = job.run(&mut |_, _| {}).unwrap();
+        let done = job.run(&mut |_, _| true).unwrap();
         run(&mut e, "wave.gain", json!({"db": -1}));
         let err = apply_separation(&mut e, done).unwrap_err().to_string();
         assert!(err.contains("changed"), "{err}");

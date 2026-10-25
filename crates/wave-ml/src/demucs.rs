@@ -51,7 +51,7 @@ pub fn separate(
     stems: usize,
     channels: &[Vec<f32>],
     sample_rate: u32,
-    progress: &mut dyn FnMut(f32),
+    progress: &mut dyn FnMut(f32) -> bool,
 ) -> Result<Vec<Stem>, String> {
     let (Some(left), right) = (channels.first(), channels.get(1)) else {
         return Err("no audio to separate".into());

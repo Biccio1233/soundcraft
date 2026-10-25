@@ -41,7 +41,11 @@ fn stub_network_rebuilds_the_mix() {
     let mean = x[0].iter().zip(&x[1]).map(|(a, b)| f64::from(a + b) / 2.0).sum::<f64>() / len as f64;
     let mut net = stub(4);
     let mut last = 0.0f32;
-    let stems = demucs::separate_with(&x, 4, &mut net, &mut |p| last = p).unwrap();
+    let stems = demucs::separate_with(&x, 4, &mut net, &mut |p| {
+        last = p;
+        true
+    })
+    .unwrap();
     assert_eq!(stems.len(), 4);
     assert!((last - 1.0).abs() < 1e-6);
     for stem in &stems {
@@ -61,14 +65,28 @@ fn stub_network_rebuilds_the_mix() {
 #[test]
 fn short_and_empty_inputs() {
     let x = stereo_noise(RATE as usize, 5);
-    let stems = demucs::separate_with(&x, 4, &mut stub(4), &mut |_| {}).unwrap();
+    let stems = demucs::separate_with(&x, 4, &mut stub(4), &mut |_| true).unwrap();
     assert!(stems.iter().all(|s| s[0].len() == RATE as usize && s[1].len() == RATE as usize));
-    let empty = demucs::separate_with(&[vec![], vec![]], 4, &mut stub(4), &mut |_| {}).unwrap();
+    let empty = demucs::separate_with(&[vec![], vec![]], 4, &mut stub(4), &mut |_| true).unwrap();
     assert!(empty.len() == 4 && empty.iter().all(|s| s[0].is_empty()));
     let mut wrong = |_: &[f32], _: &[f32]| Ok((vec![0.0; 10], vec![0.0; 10]));
-    assert!(demucs::separate_with(&x, 4, &mut wrong, &mut |_| {}).is_err());
+    assert!(demucs::separate_with(&x, 4, &mut wrong, &mut |_| true).is_err());
     let mut failing = |_: &[f32], _: &[f32]| Err::<(Vec<f32>, Vec<f32>), String>("boom".into());
-    assert_eq!(demucs::separate_with(&x, 4, &mut failing, &mut |_| {}).unwrap_err(), "boom");
+    assert_eq!(demucs::separate_with(&x, 4, &mut failing, &mut |_| true).unwrap_err(), "boom");
+}
+
+#[test]
+fn separation_stops_when_cancelled() {
+    let x = stereo_noise(20 * RATE as usize, 7);
+    let mut calls = 0;
+    let mut inner = stub(4);
+    let mut net = |mix: &[f32], mag: &[f32]| {
+        calls += 1;
+        inner(mix, mag)
+    };
+    let err = demucs::separate_with(&x, 4, &mut net, &mut |_| false).unwrap_err();
+    assert!(err.contains("cancelled"), "{err}");
+    assert_eq!(calls, 1, "stopped after the first segment");
 }
 
 #[test]

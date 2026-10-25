@@ -106,6 +106,7 @@ pub const WAVE_MENUS: &[MenuItem] = &[
     file(&["Analysis"], "Transcribe Lyrics…", "wave.transcribe", None, Dialog::Transcribe),
     file(&["Analysis"], "Practice…", "wave.practice", None, Dialog::Practice),
     item(&["Analysis"], "Practice Off", "wave.practice_off", "", None),
+    item(&["Analysis"], "Cancel Job", "wave.cancel_job", "", None),
     file(&["Analysis"], "Models…", "wave.model_download", None, Dialog::Models),
     item(&["View"], "Spectral Display", "wave.view_spectral", "", Some("Cmd+Shift+D")),
     file(&["Window"], "Amplitude Statistics…", "wave.stats", None, Dialog::Stats),
