@@ -258,3 +258,26 @@ fn long_instrumental_passages_add_no_words() {
         assert!(found as f32 >= 0.9 * truth.len() as f32, "{language}: only {found}/{} words", truth.len());
     }
 }
+
+#[test]
+#[ignore = "needs the htdemucs_6s model and macOS `say`"]
+fn six_stem_model_names_its_stems() {
+    let d = dir("acceptance_f2b_six");
+    let ([dr, bass, pad, voice], _) = stems(&d);
+    let mix: Vec<f32> = (0..voice.len()).map(|i| dr[i] + bass[i] + pad[i] + voice[i]).collect();
+    let src = d.join("mix.wav");
+    write_wav(&src, SR, vec![mix.clone(), mix]);
+    let results = script(&d, &format!("wave.open {{\"path\": \"{}\"}}\nwave.separate_stems {{\"model\": 6}}\n", src.to_str().unwrap()));
+    let stems = result(&results, "wave.separate_stems")["stems"].as_array().unwrap().clone();
+    let names: Vec<&str> = stems.iter().map(|s| s["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["drums", "bass", "other", "vocals", "guitar", "piano"]);
+    let sdr_of = |name: &str, reference: &[f32]| {
+        let path = PathBuf::from(stems.iter().find(|s| s["name"] == name).unwrap()["path"].as_str().unwrap());
+        let (sr, est) = read_wav(&path);
+        assert_eq!((sr, est.len(), est[0].len()), (SR, 2, reference.len()));
+        (sdr(reference, &est[0]) + sdr(reference, &est[1])) / 2.0
+    };
+    let (v, dsdr, b) = (sdr_of("vocals", &voice), sdr_of("drums", &dr), sdr_of("bass", &bass));
+    println!("six stems: vocals {v:.2} dB, drums {dsdr:.2} dB, bass {b:.2} dB");
+    assert!(v >= 6.0 && dsdr >= 6.0 && b >= 3.0, "stems out of order or poorly separated");
+}
