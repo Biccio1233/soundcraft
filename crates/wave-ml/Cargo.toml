@@ -1,0 +1,16 @@
+[package]
+name = "soundcraft-wave-ml"
+description = "WaveCraft's model runtime: checked model downloads, HTDemucs on ONNX Runtime, whisper.cpp transcription and Signalsmith Stretch, behind the Models trait"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+soundcraft-wave-analysis.workspace = true
+ureq.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

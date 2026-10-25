@@ -8,6 +8,7 @@ pub mod chroma;
 pub mod cqt;
 pub mod key;
 pub mod lyrics;
+pub mod models;
 pub mod resample;
 pub mod sections;
 pub mod spectrum;
