@@ -1,6 +1,7 @@
 //! HTDemucs on ONNX Runtime: the network of the host side in `wave_analysis::demucs`.
 
 use ort::session::Session;
+use ort::session::builder::SessionBuilder;
 use ort::value::Tensor;
 use soundcraft_wave_analysis::demucs::{self as host, BINS, FRAMES, RATE, SEGMENT};
 use soundcraft_wave_analysis::models::Stem;
@@ -21,13 +22,23 @@ fn threads() -> usize {
     std::thread::available_parallelism().map_or(4, |n| n.get())
 }
 
+#[cfg(target_os = "macos")]
+fn with_coreml(builder: SessionBuilder) -> Result<SessionBuilder, String> {
+    builder.with_execution_providers([ort::ep::CoreML::default().build()]).map_err(|e| format!("ONNX Runtime (CoreML): {e}"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn with_coreml(_: SessionBuilder) -> Result<SessionBuilder, String> {
+    Err("CoreML exists only on macOS".into())
+}
+
 fn session(path: &Path, coreml: bool) -> Result<Session, String> {
     let env = environment()?;
     let mut builder = Session::builder(env).map_err(|e| format!("ONNX Runtime: {e}"))?;
     // ort's default device policy registers CoreML on macOS; on this model CoreML can fail ("unable
     // to compute the prediction") and is slower than the CPU, so the CPU is the default.
     builder = if coreml {
-        builder.with_execution_providers([ort::ep::CoreML::default().build()]).map_err(|e| format!("ONNX Runtime (CoreML): {e}"))?
+        with_coreml(builder)?
     } else {
         builder.with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU).map_err(|e| format!("ONNX Runtime: {e}"))?
     };
