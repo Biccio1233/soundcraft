@@ -2,7 +2,8 @@
 # full `cargo xtask ci` gate. The desktop apps stay native; sources are bind-mounted, not copied.
 # cmake and clang build whisper.cpp (whisper-rs-sys) and libclang feeds bindgen; ONNX Runtime comes
 # prebuilt through `ort`. Models are never in the image: they download on first use.
-FROM rust:1.99-bookworm
+# Trixie (GCC 14): ort's prebuilt ONNX Runtime links against a newer libstdc++ than bookworm's.
+FROM rust:1.99-trixie
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libasound2-dev pkg-config git ca-certificates \
       mesa-vulkan-drivers libvulkan1 \
