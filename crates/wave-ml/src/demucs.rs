@@ -24,9 +24,13 @@ fn threads() -> usize {
 fn session(path: &Path, coreml: bool) -> Result<Session, String> {
     let env = environment()?;
     let mut builder = Session::builder(env).map_err(|e| format!("ONNX Runtime: {e}"))?;
-    if coreml {
-        builder = builder.with_execution_providers([ort::ep::CoreML::default().build()]).map_err(|e| format!("ONNX Runtime (CoreML): {e}"))?;
-    }
+    // ort's default device policy registers CoreML on macOS; on this model CoreML can fail ("unable
+    // to compute the prediction") and is slower than the CPU, so the CPU is the default.
+    builder = if coreml {
+        builder.with_execution_providers([ort::ep::CoreML::default().build()]).map_err(|e| format!("ONNX Runtime (CoreML): {e}"))?
+    } else {
+        builder.with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU).map_err(|e| format!("ONNX Runtime: {e}"))?
+    };
     builder
         .with_intra_threads(threads())
         .map_err(|e| format!("ONNX Runtime: {e}"))?
