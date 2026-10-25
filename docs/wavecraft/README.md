@@ -60,6 +60,7 @@ asks first), and it never replaces a SoundCraft multitrack session.
 | Measurement | `wave.stats {start?, end?, filter?: bandpass\|highpass\|lowpass, hz?, q?}` (peak and RMS) |
 | Music analysis (never undo steps) | `wave.analyze`, `wave.analyze_tuning`, `wave.analyze_tempo`, `wave.analyze_key`, `wave.analyze_chords`, `wave.analyze_sections`, `wave.analysis_info`, `wave.chord_diagrams`, `wave.view_analysis` |
 | Lyrics and ChordPro | `wave.lyrics_set`, `wave.lyrics`, `wave.chords_over_lyrics`, `wave.chordpro_export` |
+| Models (never undo steps) | `wave.models`, `wave.model_download`, `wave.separate_stems`, `wave.stems`, `wave.transcribe`, `wave.practice`, `wave.practice_off`, `wave.practice_export` |
 
 Export writes WAV, AIFF or FLAC at 16, 24 or 32 bits or 32-bit float (in the app, File › Export…
 asks for the file, then for bit depth and dither). Dither defaults to TPDF at
@@ -145,6 +146,43 @@ original songs' chords). One cover of a song on G B C Cm reads G major, 90.9 BPM
 on A, Bm and D. Section boundaries on real recordings are much less reliable than on the
 synthetic song.
 
+## Stems, transcription and practice (F2b)
+
+These use machine-learning models, which are never part of WaveCraft: each is downloaded once, when
+you ask, into `~/Library/Application Support/WaveCraft/models` (`WAVECRAFT_MODELS` overrides it),
+checked by size and sha256 against a pinned revision. `wave.models` lists them with sizes and
+licences; a command that needs a missing one says which and how big, and downloads it only with
+`download: true` (in the app the button says so: "Download 169 MB and Separate").
+
+| Model | Size | Use |
+|---|---|---|
+| `htdemucs` (default) | 169 MB | 4 stems: drums, bass, other, vocals |
+| `htdemucs_6s` | 110 MB | 6 stems: adds guitar and piano |
+| `whisper-large-v3-turbo-q5_0` (default) | 574 MB | lyrics with word times; the other Whisper sizes, 78 MB to 1.6 GB, are registered too |
+
+- `wave.separate_stems {model: 4|6}` writes 32-bit float WAVs to `<song folder>/stems/<song name>/`,
+  at the song's rate and channel count (HTDemucs on ONNX Runtime, on the CPU).
+- With current stems, `wave.analyze` reads chords, key and tuning from the stems without vocals and
+  drums (the voice blurs the harmony of the mix) and tempo and sections from the mix: separate
+  first, then analyse.
+- `wave.transcribe {language: it|en|auto}` listens to the vocals stem when there is a current one
+  (much cleaner), else to the mix (whisper.cpp with Metal), and sets the heard words. Lyrics you
+  supplied with `wave.lyrics_set {text}` are re-aligned to them, and `wave.chords_over_lyrics` writes
+  the song with chords over the real words.
+- `wave.practice {tempo: 50..150, semitones: -12..12, stems: {vocals: 0, …}}` renders the song (or a
+  stem mix, so you can drop the voice or the drums) at another tempo and pitch with Signalsmith
+  Stretch; the app plays it instead of the file, the cursor following the song's own time. The file
+  is untouched; `wave.practice_export` saves the render, `wave.practice_off` drops it.
+
+In the app (Analysis menu): Separate Stems…, Transcribe Lyrics…, Practice… and Models…. Long work,
+including Analyze Song, runs in the background with its progress in the status line.
+
+**Model acceptance** (a synthetic 41 s song: drums, bass, pad and an Italian TTS voice whose words
+sit at known times): vocal SDR 15.15 dB (target ≥ 6; drums 19.1, bass 15.2, other 11.6); 27 of 27
+words transcribed from the vocals stem, in order, starting within 0.5 s (target ≥ 90 %). The
+practice render of the 131 s acceptance song at 80 % and +2 semitones lasts 1.2500 × as long and reads
+76.80 BPM, B minor.
+
 ## Quality gates
 
 - `docker compose run --rm ci` — the full `cargo xtask ci` on Linux (software Vulkan for the UI tests).
@@ -159,17 +197,23 @@ synthetic song.
 - F2a acceptance: `cargo test -p wavecraft-cli --test acceptance_f2` (the synthetic song above).
   The ChordPro check against the corpus reader is ignored by default:
   `cargo test -p wavecraft-cli --test acceptance_f2 -- --ignored` (`WAVECRAFT_CORPUS_READER=path`).
+- F2b acceptance: `cargo test -p wavecraft-cli --test acceptance_f2b` (the practice render); with the
+  models downloaded and macOS `say`: `cargo test --release -p wavecraft-cli --test acceptance_f2b --
+  --ignored`. The native backends alone: `cargo test --release -p soundcraft-wave-ml -- --ignored`.
 
 ## Timings on the development Mac (Apple silicon, release build)
 
 - Normalize + fade + 24-bit export of a 217 s stereo 44.1 kHz take: 0.6 s.
 - Open + noise print + noise reduction (FFT 4096) of the same take: 1.7 s.
 - Open + `wave.analyze` of a 4.5-minute MP3: about 5 s on a loaded machine (load average 13–20); the analysis alone about 3 s.
+- Stems (4, CPU) of the 131 s stereo acceptance song: 16 s including opening it (about 8 × real time). With `WAVECRAFT_COREML=1` the same took 52 minutes (and once failed outright): keep the CPU.
+- Transcription (Metal) of the 41 s TTS song from its vocals stem: about 7 s including loading the 574 MB model.
+- Practice render (80 %, +2 semitones) of the 131 s song: about 1 s including opening it.
+- Model downloads on this connection: 169 MB in 22 s, 574 MB in 81 s.
 - Release build of both binaries from a warm cache: 1 min 40 s (21 min after the F2a engine changes, with the machine loaded).
 
 ## Limits
 
 Mono and stereo files only, up to 2^28 frames per channel (about 93 minutes of stereo at 48 kHz).
-Restoration has no learned sound removal, click/pop or phase tools yet (see the parity doc). Music
-analysis has no stems, transcription or tempo/transpose preview yet (F2b); no M4A export or batch
-(F3).
+Restoration has no learned sound removal, click/pop or phase tools yet (see the parity doc). Tempo
+and transpose are a rendered preview, not live; no M4A export or batch (F3).
