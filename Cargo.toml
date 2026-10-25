@@ -50,6 +50,9 @@ cpal = "0.18"
 # WaveCraft models (crates/wave-ml only): checked downloads, ONNX Runtime, whisper.cpp, Signalsmith Stretch.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.11"
+ort = "=2.0.0-rc.15"
+whisper-rs = "0.16"
+signalsmith-stretch = "0.1.3"
 
 # Which file paths stored in a session may be opened.
 craft-docpath = { version = "0.1.0", git = "https://github.com/storytold/craft-libs", rev = "82a24b006eefa036b43c09a67fb9a3fbd17ffe63" }
