@@ -103,22 +103,25 @@ margin is small (0.17 dB) on this take: with brighter noise, lower the reduction
 
 Everything here is pure Rust (`crates/wave-analysis`), with no model to download. The audio is
 mixed to mono and resampled to 22,050 Hz once. `wave.analyze` runs the whole chain on the
-selection (or the whole file) and keeps the result until the audio changes (`wave.analysis_info`
-says when it is stale). The other commands reuse it.
+selection (or the whole file) and keeps the result until the audio changes: selecting, zooming or
+moving the playhead keeps it, an edit makes it stale (`wave.analysis_info`) and an undo makes it
+fresh again. The other commands reuse it as it is, with its range and grid, unless they name
+`start`/`end` or `grid`.
 
 | Analysis | How it works |
 |---|---|
 | Tuning (`wave.analyze_tuning`) | Spectral peaks between 80 Hz and 2 kHz against the equal-tempered grid: the reference A4 in Hz, which then centres the chroma. |
-| Tempo, beats, bars (`wave.analyze_tempo`) | Onsets from log-spectral flux over 40 bands, an autocorrelation tempo with a preference around 120 BPM, and beats by dynamic programming (Ellis 2007). An octave check doubles a slow estimate whose half-beats are as strong as a snare. Bars start where the chords change and the bass hits; 4/4 unless `beats_per_bar`. |
+| Tempo, beats, bars (`wave.analyze_tempo`) | No tempo when nothing has an onset (a held note, a drone). Otherwise onsets from log-spectral flux over 40 bands, an autocorrelation tempo with a preference around 120 BPM, and beats by dynamic programming (Ellis 2007). An octave check doubles a slow estimate whose half-beats are as strong as a snare. Bars start where the chords change and the bass hits; 4/4 unless `beats_per_bar`. |
 | Key (`wave.analyze_key`) | Krumhansl–Kessler profiles. When the relative major/minor scores almost the same, the tonic chord the song dwells on decides. |
-| Chords (`wave.analyze_chords {grid: beat\|bar\|free, level: 1..3, capo: 0..7}`) | Constant-Q chroma against harmonic templates of maj, m, 7, maj7, m7, sus2, sus4, dim and aug in all keys, smoothed by Viterbi; the bass decides inversions (`C/E`). Level 1 = major and minor only, 2 = adds sevenths and sus, 3 = everything. With a capo the labels are the shapes to play. |
+| Chords (`wave.analyze_chords {grid: beat\|bar\|free, level: 1..3, capo: 0..7}`) | Constant-Q chroma against harmonic templates of maj, m, 7, maj7, m7, sus2, sus4, dim and aug in all keys, smoothed by Viterbi; the bass decides inversions (`C/E`). Where no chord fits well (drums alone, speech, noise) there is no chord, never a guessed one. Level 1 = major and minor only, 2 = adds sevenths and sus, 3 = everything. With a capo the labels are the shapes to play. |
 | Sections (`wave.analyze_sections`) | Bar-by-bar self-similarity of harmony and timbre; boundaries from checkerboard novelty; repeats share a letter; names (intro, verse, chorus, bridge, outro) from repetition and position, as a best effort. |
 | Guitar diagrams (`wave.chord_diagrams {level, capo: "auto"\|0..7}`) | Our own search over fretboard shapes in standard tuning, scored for fingers, barre, stretch, position and open strings. `auto` suggests a capo only when it makes the song clearly easier. |
 
 Lyrics: `wave.lyrics_set {words: [{word, start, end}]}` sets timed words (F2b's transcription will
 fill them). Then `wave.lyrics_set {text}` or `{path}` aligns the real lyrics to them word by word,
-misheard words included. `wave.chords_over_lyrics` puts the chords on the words; where nobody
-sings, it writes chord-only lines of four bars. `wave.chordpro_export` writes ChordPro (with
+misheard words included; pasted tags like `[Chorus]` are dropped and every time stays inside the
+file. `wave.chords_over_lyrics` puts the chords on the words (inside a held word when the chord
+changes on it); where nobody sings, it writes chord-only lines of four bars. `wave.chordpro_export` writes ChordPro (with
 `{define}` diagrams, `{soc}`/`{eoc}` choruses), plain text with chords above the words, or JSON.
 
 In the app: Analysis › Analyze Song draws beat, chord and section lanes under the ruler.

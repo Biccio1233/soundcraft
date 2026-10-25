@@ -198,7 +198,7 @@ The behaviour reference is an incumbent waveform editor for editing and restorat
   - Tempo: onset strength (log-spectral flux), autocorrelation with a log-Gaussian tempo prior, then Ellis 2007 dynamic-programming beat tracking. Downbeats come from the periodicity of chord changes and bass onsets. 4/4 is assumed unless `beats_per_bar` is given.
   - Sections: bar-synchronous chroma and timbre self-similarity, checkerboard novelty, and segment clustering into letters. Names come from position, repetition, loudness and, when a vocal stem exists, vocal presence. The acceptance checks boundaries; names are best effort.
   - Chord difficulty levels: 1 = major and minor triads, no slash; 2 = adds 7, m7, maj7 and sus; 3 = everything.
-  - Guitar voicings come from our own search over fretboard shapes (standard tuning), scored for open strings, position, fingers, barre and stretch. A capo suggestion minimises the total difficulty. Diagrams travel in ChordPro as `{define}` lines.
+  - Guitar voicings come from our own search over fretboard shapes (standard tuning), scored for open strings, position, fingers, barre and stretch. A capo suggestion minimises the total difficulty, and is offered only when it saves at least 1.5 difficulty points per chord over playing without one *(call made in F2a: plain minimisation put C G Am F on capo 5)*. Diagrams travel in ChordPro as `{define}` lines.
   - ChordPro writes only labels the songwriting corpus reader parses (checked: major, m, 7, maj7, m7, sus2, sus4, dim, aug, slash). "No chord" is never written as a label.
   - The parity document for this phase is `docs/wavecraft/practice-app-parity.md`, which keeps product names out of the repo.
 - **Two plans**:
