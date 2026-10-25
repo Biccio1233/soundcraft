@@ -58,6 +58,8 @@ asks first), and it never replaces a SoundCraft multitrack session.
 | Noise print | `wave.noise_print_capture`, `wave.noise_print_info`, `wave.noise_print_save`, `wave.noise_print_load`, `wave.noise_print_clear` |
 | Restoration (one undo step each) | `wave.noise_reduction`, `wave.adaptive_noise_reduction`, `wave.dehum`, `wave.hiss_reduction`, `wave.declip`, `wave.dereverb` |
 | Measurement | `wave.stats {start?, end?, filter?: bandpass\|highpass\|lowpass, hz?, q?}` (peak and RMS) |
+| Music analysis (never undo steps) | `wave.analyze`, `wave.analyze_tuning`, `wave.analyze_tempo`, `wave.analyze_key`, `wave.analyze_chords`, `wave.analyze_sections`, `wave.analysis_info`, `wave.chord_diagrams`, `wave.view_analysis` |
+| Lyrics and ChordPro | `wave.lyrics_set`, `wave.lyrics`, `wave.chords_over_lyrics`, `wave.chordpro_export` |
 
 Export writes WAV, AIFF or FLAC at 16, 24 or 32 bits or 32-bit float (in the app, File › Export…
 asks for the file, then for bit depth and dither). Dither defaults to TPDF at
@@ -97,6 +99,49 @@ band-pass at 3000 Hz, Q 0.5). Capture on the pause, defaults on the whole file:
 ffmpeg on WaveCraft's 24-bit export reads the same pause and 3 kHz figures to 0.01 dB. The 3 kHz
 margin is small (0.17 dB) on this take: with brighter noise, lower the reduction or the offset.
 
+## Music analysis (F2a)
+
+Everything here is pure Rust (`crates/wave-analysis`), with no model to download. The audio is
+mixed to mono and resampled to 22,050 Hz once. `wave.analyze` runs the whole chain on the
+selection (or the whole file) and keeps the result until the audio changes (`wave.analysis_info`
+says when it is stale). The other commands reuse it.
+
+| Analysis | How it works |
+|---|---|
+| Tuning (`wave.analyze_tuning`) | Spectral peaks between 80 Hz and 2 kHz against the equal-tempered grid: the reference A4 in Hz, which then centres the chroma. |
+| Tempo, beats, bars (`wave.analyze_tempo`) | Onsets from log-spectral flux over 40 bands, an autocorrelation tempo with a preference around 120 BPM, and beats by dynamic programming (Ellis 2007). An octave check doubles a slow estimate whose half-beats are as strong as a snare. Bars start where the chords change and the bass hits; 4/4 unless `beats_per_bar`. |
+| Key (`wave.analyze_key`) | Krumhansl–Kessler profiles. When the relative major/minor scores almost the same, the tonic chord the song dwells on decides. |
+| Chords (`wave.analyze_chords {grid: beat\|bar\|free, level: 1..3, capo: 0..7}`) | Constant-Q chroma against harmonic templates of maj, m, 7, maj7, m7, sus2, sus4, dim and aug in all keys, smoothed by Viterbi; the bass decides inversions (`C/E`). Level 1 = major and minor only, 2 = adds sevenths and sus, 3 = everything. With a capo the labels are the shapes to play. |
+| Sections (`wave.analyze_sections`) | Bar-by-bar self-similarity of harmony and timbre; boundaries from checkerboard novelty; repeats share a letter; names (intro, verse, chorus, bridge, outro) from repetition and position, as a best effort. |
+| Guitar diagrams (`wave.chord_diagrams {level, capo: "auto"\|0..7}`) | Our own search over fretboard shapes in standard tuning, scored for fingers, barre, stretch, position and open strings. `auto` suggests a capo only when it makes the song clearly easier. |
+
+Lyrics: `wave.lyrics_set {words: [{word, start, end}]}` sets timed words (F2b's transcription will
+fill them). Then `wave.lyrics_set {text}` or `{path}` aligns the real lyrics to them word by word,
+misheard words included. `wave.chords_over_lyrics` puts the chords on the words; where nobody
+sings, it writes chord-only lines of four bars. `wave.chordpro_export` writes ChordPro (with
+`{define}` diagrams, `{soc}`/`{eoc}` choruses), plain text with chords above the words, or JSON.
+
+In the app: Analysis › Analyze Song draws beat, chord and section lanes under the ruler.
+Chords & Lyrics… shows the song with the line under the playhead highlighted, Chord Diagrams…
+shows the shapes, and both have Level and Capo pickers.
+
+**Synthetic acceptance** (A minor, 96 BPM, A4 = 436 Hz, 8 sections over 52 bars):
+
+| Target | Measured |
+|---|---|
+| Tuning ± 1 Hz | 435.93 Hz |
+| Tempo ± 2 BPM | 96.00 |
+| Key | A minor |
+| Chords right on ≥ 85 % of bars | 100 % |
+| Section boundaries within a beat | 8 of 8 |
+| ChordPro read by the songwriting corpus reader | 44 of 44 chords, same order |
+
+**Two real covers, report only** (no ground truth for these versions; the corpus gives the
+original songs' chords). One cover of a song on G B C Cm reads G major, 90.9 BPM, and at level 1
+96 % of its time on those four chords. One on A Bm D reads A major, 137.7 BPM, with 92 % of its time
+on A, Bm and D. Section boundaries on real recordings are much less reliable than on the
+synthetic song.
+
 ## Quality gates
 
 - `docker compose run --rm ci` — the full `cargo xtask ci` on Linux (software Vulkan for the UI tests).
@@ -108,15 +153,20 @@ margin is small (0.17 dB) on this take: with brighter noise, lower the reduction
   over −70 dBFS noise keeps the tone within 1 dB and lowers the floor ≥ 20 dB; measured +0.00 dB and
   −28.8 dB). The real take: `cargo test --release -p wavecraft-cli --test acceptance_f1 -- --ignored`
   (`WAVECRAFT_REAL_TAKE=path` if it is elsewhere).
+- F2a acceptance: `cargo test -p wavecraft-cli --test acceptance_f2` (the synthetic song above).
+  The ChordPro check against the corpus reader is ignored by default:
+  `cargo test -p wavecraft-cli --test acceptance_f2 -- --ignored` (`WAVECRAFT_CORPUS_READER=path`).
 
 ## Timings on the development Mac (Apple silicon, release build)
 
 - Normalize + fade + 24-bit export of a 217 s stereo 44.1 kHz take: 0.6 s.
 - Open + noise print + noise reduction (FFT 4096) of the same take: 1.7 s.
-- Release build of both binaries from a warm cache: 1 min 40 s.
+- Open + `wave.analyze` of a 4.5-minute MP3: about 5 s on a loaded machine (load average 13–20); the analysis alone about 3 s.
+- Release build of both binaries from a warm cache: 1 min 40 s (21 min after the F2a engine changes, with the machine loaded).
 
 ## Limits
 
 Mono and stereo files only, up to 2^28 frames per channel (about 93 minutes of stereo at 48 kHz).
-Restoration has no learned sound removal, click/pop or phase tools yet (see the parity doc). No
-music analysis yet (F2), no M4A export or batch (F3).
+Restoration has no learned sound removal, click/pop or phase tools yet (see the parity doc). Music
+analysis has no stems, transcription or tempo/transpose preview yet (F2b); no M4A export or batch
+(F3).

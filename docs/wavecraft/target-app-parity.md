@@ -3,7 +3,7 @@
 > **Last updated:** 2026-10-24 · **Change:** minor (restoration section, F1) · **Target:** the incumbent waveform editor, observed black-box (menus, dialogs, screenshots by window id, kept under the gitignored `plan/`)
 
 What the incumbent's waveform view offers for one file, and where WaveCraft stands. Wording is ours;
-only feature names are shared. Music analysis (F2) gets its own section when it lands.
+only feature names are shared. Music analysis (F2) has its own document: `practice-app-parity.md`.
 
 | Feature | WaveCraft | Command(s) | Test |
 |---|---|---|---|
