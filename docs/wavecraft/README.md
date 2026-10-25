@@ -60,7 +60,7 @@ asks first), and it never replaces a SoundCraft multitrack session.
 | Measurement | `wave.stats {start?, end?, filter?: bandpass\|highpass\|lowpass, hz?, q?}` (peak and RMS) |
 | Music analysis (never undo steps) | `wave.analyze`, `wave.analyze_tuning`, `wave.analyze_tempo`, `wave.analyze_key`, `wave.analyze_chords`, `wave.analyze_sections`, `wave.analysis_info`, `wave.chord_diagrams`, `wave.view_analysis` |
 | Lyrics and ChordPro | `wave.lyrics_set`, `wave.lyrics`, `wave.chords_over_lyrics`, `wave.chordpro_export` |
-| Models (never undo steps) | `wave.models`, `wave.model_download`, `wave.separate_stems`, `wave.stems`, `wave.transcribe`, `wave.practice`, `wave.practice_off`, `wave.practice_export` |
+| Models (never undo steps) | `wave.models`, `wave.model_download`, `wave.separate_stems`, `wave.stems`, `wave.transcribe`, `wave.practice`, `wave.practice_off`, `wave.practice_export`, `wave.cancel_job` |
 
 Export writes WAV, AIFF or FLAC at 16, 24 or 32 bits or 32-bit float (in the app, File › Export…
 asks for the file, then for bit depth and dither). Dither defaults to TPDF at
@@ -150,9 +150,11 @@ synthetic song.
 
 These use machine-learning models, which are never part of WaveCraft: each is downloaded once, when
 you ask, into `~/Library/Application Support/WaveCraft/models` (`WAVECRAFT_MODELS` overrides it),
-checked by size and sha256 against a pinned revision. `wave.models` lists them with sizes and
-licences; a command that needs a missing one says which and how big, and downloads it only with
-`download: true` (in the app the button says so: "Download 169 MB and Separate").
+checked by size and sha256 against a pinned revision, and checked again before its first use in each
+session: a damaged file is moved aside (`<file>.damaged`) and downloaded again on request.
+`wave.models` lists them with sizes and licences; a command that needs a missing one says which and
+how big, and downloads it only with `download: true` (in the app the button says so: "Download
+169 MB and Separate"). A download that stalls for 60 s fails instead of hanging.
 
 | Model | Size | Use |
 |---|---|---|
@@ -161,26 +163,34 @@ licences; a command that needs a missing one says which and how big, and downloa
 | `whisper-large-v3-turbo-q5_0` (default) | 574 MB | lyrics with word times; the other Whisper sizes, 78 MB to 1.6 GB, are registered too |
 
 - `wave.separate_stems {model: 4|6}` writes 32-bit float WAVs to `<song folder>/stems/<song name>/`,
-  at the song's rate and channel count (HTDemucs on ONNX Runtime, on the CPU).
+  at the song's rate and channel count (HTDemucs on ONNX Runtime, on the CPU), for files up to
+  15 minutes (the stems are held in memory).
 - With current stems, `wave.analyze` reads chords, key and tuning from the stems without vocals and
-  drums (the voice blurs the harmony of the mix) and tempo and sections from the mix: separate
-  first, then analyse.
+  drums (the voice blurs the harmony of the mix) and tempo and sections from the mix. In the app a
+  song already analysed is analysed again as soon as its stems arrive.
 - `wave.transcribe {language: it|en|auto}` listens to the vocals stem when there is a current one
-  (much cleaner), else to the mix (whisper.cpp with Metal), and sets the heard words. Lyrics you
-  supplied with `wave.lyrics_set {text}` are re-aligned to them, and `wave.chords_over_lyrics` writes
-  the song with chords over the real words.
+  (much cleaner), else to the mix (whisper.cpp with Metal), only where a voice sings: silence and
+  instrumental passages are skipped, so no words are invented there. It sets the heard words, each
+  ending where the voice stops. Lyrics you supplied with `wave.lyrics_set {text}` are re-aligned to
+  them, and `wave.chords_over_lyrics` writes the song with chords over the real words.
 - `wave.practice {tempo: 50..150, semitones: -12..12, stems: {vocals: 0, …}}` renders the song (or a
   stem mix, so you can drop the voice or the drums) at another tempo and pitch with Signalsmith
-  Stretch; the app plays it instead of the file, the cursor following the song's own time. The file
-  is untouched; `wave.practice_export` saves the render, `wave.practice_off` drops it.
+  Stretch; the app plays it instead of the file, and the clock, Locate and the highlighted lyric line
+  follow the song's own time. The file is untouched; `wave.practice_export` saves the render,
+  `wave.practice_off` drops it. After an edit the render is out of date: the app plays the file
+  again until you render anew.
 
 In the app (Analysis menu): Separate Stems…, Transcribe Lyrics…, Practice… and Models…. Long work,
-including Analyze Song, runs in the background with its progress in the status line.
+including Analyze Song, runs in the background with its progress in the status line; Cancel there
+(or Analysis ▸ Cancel Job, `wave.cancel_job`) stops it.
 
 **Model acceptance** (a synthetic 41 s song: drums, bass, pad and an Italian TTS voice whose words
 sit at known times): vocal SDR 15.15 dB (target ≥ 6; drums 19.1, bass 15.2, other 11.6); 27 of 27
-words transcribed from the vocals stem, in order, starting within 0.5 s (target ≥ 90 %). The
-practice render of the 131 s acceptance song at 80 % and +2 semitones lasts 1.2500 × as long and reads
+words transcribed from the vocals stem, in order, starting within 0.5 s (target ≥ 90 %). With a 32 s
+intro and a 35 s instrumental break: 27 of 27 words with `it` and with `auto`, none in the
+instrumental passages. Six stems: vocals 15.88 dB, drums 19.04, bass 14.81, in the export's order.
+The 131 s acceptance song through real stems reads A minor and the right chord on 100 % of its 52
+bars. The practice render of that song at 80 % and +2 semitones lasts 1.2500 × as long and reads
 76.80 BPM, B minor.
 
 ## Quality gates
@@ -207,13 +217,14 @@ practice render of the 131 s acceptance song at 80 % and +2 semitones lasts 1.25
 - Open + noise print + noise reduction (FFT 4096) of the same take: 1.7 s.
 - Open + `wave.analyze` of a 4.5-minute MP3: about 5 s on a loaded machine (load average 13–20); the analysis alone about 3 s.
 - Stems (4, CPU) of the 131 s stereo acceptance song: 16 s including opening it (about 8 × real time). With `WAVECRAFT_COREML=1` the same took 52 minutes (and once failed outright): keep the CPU.
-- Transcription (Metal) of the 41 s TTS song from its vocals stem: about 7 s including loading the 574 MB model.
+- Transcription (Metal) of the 41 s TTS song from its vocals stem: about 3 s including loading the 574 MB model (voiced regions only; 7 s when the whole file went to the model).
 - Practice render (80 %, +2 semitones) of the 131 s song: about 1 s including opening it.
-- Model downloads on this connection: 169 MB in 22 s, 574 MB in 81 s.
+- Model downloads on this connection: 169 MB in 22 s, 574 MB in 81 s, 110 MB in 17 s.
 - Release build of both binaries from a warm cache: 1 min 40 s (21 min after the F2a engine changes, with the machine loaded).
 
 ## Limits
 
-Mono and stereo files only, up to 2^28 frames per channel (about 93 minutes of stereo at 48 kHz).
+Mono and stereo files only, up to 2^28 frames per channel (about 93 minutes of stereo at 48 kHz);
+stems for files up to 15 minutes.
 Restoration has no learned sound removal, click/pop or phase tools yet (see the parity doc). Tempo
 and transpose are a rendered preview, not live; no M4A export or batch (F3).
