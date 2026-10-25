@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 soundcraft-engine.workspace = true
+soundcraft-wave-ml.workspace = true
 soundcraft-automation.workspace = true
 soundcraft-dsp.workspace = true
 serde_json.workspace = true

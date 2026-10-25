@@ -5122,6 +5122,7 @@ dependencies = [
  "soundcraft-playback",
  "soundcraft-ui-egui",
  "soundcraft-ui-wave",
+ "soundcraft-wave-ml",
 ]
 
 [[package]]
@@ -5134,6 +5135,7 @@ dependencies = [
  "soundcraft-dsp",
  "soundcraft-engine",
  "soundcraft-wave-analysis",
+ "soundcraft-wave-ml",
 ]
 
 [[package]]

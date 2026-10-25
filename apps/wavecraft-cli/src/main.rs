@@ -90,9 +90,16 @@ fn main() -> ExitCode {
     code
 }
 
+/// An engine with the model runtime (stems, transcription, practice preview).
+fn engine() -> Engine {
+    let mut e = Engine::default();
+    e.wave_models = Some(std::sync::Arc::new(soundcraft_wave_ml::Backend::new()));
+    e
+}
+
 /// An engine, with `--in FILE` opened when given.
 fn load_engine(args: &[String]) -> Result<Engine, String> {
-    let mut e = Engine::default();
+    let mut e = engine();
     if let Some(path) = arg_value(args, "--in") {
         e.execute("wave.open", &json!({"path": path})).map_err(|err| format!("wave.open: {err}"))?;
     }
@@ -299,7 +306,7 @@ fn mcp(args: &[String]) -> ExitCode {
     let r = if let Some(port) = connect {
         Server::with_profile(Remote::new(&port).for_product(PRODUCT), WAVECRAFT).serve(stdin.lock(), stdout.lock())
     } else {
-        let mut h = Headless::new(Engine::default()).for_product(PRODUCT);
+        let mut h = Headless::new(engine()).for_product(PRODUCT);
         if let Some(roots) = roots {
             // Every thread of this process, not only the server's: nothing reaches past the roots.
             file_access::confine_process(roots.clone());

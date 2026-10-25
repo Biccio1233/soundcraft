@@ -136,6 +136,7 @@ fn main() -> eframe::Result {
         .map(|(_, a)| a.clone());
 
     let mut engine = Engine::default();
+    engine.wave_models = Some(std::sync::Arc::new(soundcraft_wave_ml::Backend::new()));
     if let Some(f) = &file
         && let Err(e) = engine.execute("wave.open", &serde_json::json!({"path": f}))
     {

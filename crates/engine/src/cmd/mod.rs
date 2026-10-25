@@ -39,6 +39,7 @@ mod vst3;
 pub mod wave;
 pub mod wave_analysis;
 pub mod wave_edit;
+pub mod wave_ml;
 pub mod wave_rack;
 pub mod wave_restore;
 mod zoom_toggle;
@@ -146,6 +147,7 @@ pub fn command_specs() -> &'static [CommandSpec] {
         v.extend(wave_rack::specs());
         v.extend(wave_restore::specs());
         v.extend(wave_analysis::specs());
+        v.extend(wave_ml::specs());
         #[cfg(test)]
         v.extend(test_specs());
         v

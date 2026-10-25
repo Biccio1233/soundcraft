@@ -45,6 +45,10 @@ pub struct WaveFile {
     pub analysis: Option<super::wave_analysis::Analysis>,
     /// Timed words and the lyrics aligned to them (not part of the file, not an undo step).
     pub lyrics: super::wave_analysis::Lyrics,
+    /// The stems separated from the file (written beside it).
+    pub stems: Option<super::wave_ml::Stems>,
+    /// The tempo/transpose practice render the app plays instead of the file.
+    pub practice: Option<super::wave_ml::Practice>,
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -239,6 +243,8 @@ fn open(e: &mut Engine, p: &Value) -> Result<Value> {
         show_analysis: true,
         analysis: None,
         lyrics: Default::default(),
+        stems: None,
+        practice: None,
     });
     info_json(e)
 }
@@ -407,7 +413,7 @@ fn view_spectral(e: &mut Engine, p: &Value) -> Result<Value> {
     Ok(json!({"spectral": w.spectral}))
 }
 
-fn depth_param(cmd: &str, p: &Value) -> Result<Option<BitDepth>> {
+pub(super) fn depth_param(cmd: &str, p: &Value) -> Result<Option<BitDepth>> {
     let Some(v) = p.get("bit_depth").filter(|v| !v.is_null()) else { return Ok(None) };
     let text = v.as_u64().map(|n| n.to_string()).or_else(|| v.as_str().map(str::to_string)).unwrap_or_default();
     match text.trim() {
@@ -850,7 +856,8 @@ pub(crate) mod tests {
 
     #[test]
     fn wave_commands_survive_empty_params() {
-        for spec in command_specs().iter().filter(|s| s.id.starts_with("wave.")) {
+        // The model registry commands act on no file.
+        for spec in command_specs().iter().filter(|s| s.id.starts_with("wave.") && !matches!(s.id, "wave.models" | "wave.model_download")) {
             let mut e = Engine::default();
             assert!(e.execute(spec.id, &json!({})).is_err(), "{} should need an open file", spec.id);
         }

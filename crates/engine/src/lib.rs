@@ -145,6 +145,8 @@ pub struct Engine {
     pub wave: Option<cmd::wave::WaveFile>,
     /// WaveCraft's clipboard (audio, not clips: it survives opening another file).
     pub wave_clipboard: Option<cmd::wave_edit::WaveClip>,
+    /// The model runtime (stems, transcription, practice preview), when the app provides one.
+    pub wave_models: Option<Arc<dyn soundcraft_wave_analysis::models::Models>>,
 }
 
 impl Default for Engine {
@@ -178,6 +180,7 @@ impl Engine {
             pending_label: None,
             wave: None,
             wave_clipboard: None,
+            wave_models: None,
         }
     }
 

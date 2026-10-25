@@ -97,6 +97,11 @@ pub const WAVE_MENUS: &[MenuItem] = &[
     file(&["Analysis"], "Load Lyrics Text…", "wave.lyrics_set", None, Dialog::LoadLyrics),
     file(&["Analysis"], "Export ChordPro…", "wave.chordpro_export", None, Dialog::ExportChordPro),
     item(&["Analysis"], "Show Analysis Lanes", "wave.view_analysis", "", None),
+    item(&["Analysis"], "Separate Stems", "wave.separate_stems", "", None),
+    item(&["Analysis"], "Transcribe Lyrics", "wave.transcribe", "", None),
+    item(&["Analysis"], "Practice at 80 %", "wave.practice", r#"{"tempo": 80}"#, None),
+    item(&["Analysis"], "Practice Off", "wave.practice_off", "", None),
+    item(&["Analysis"], "Download Separation Model (169 MB)", "wave.model_download", r#"{"id": "htdemucs"}"#, None),
     item(&["View"], "Spectral Display", "wave.view_spectral", "", Some("Cmd+Shift+D")),
     file(&["Window"], "Amplitude Statistics…", "wave.stats", None, Dialog::Stats),
 ];

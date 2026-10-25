@@ -47,6 +47,8 @@ pub struct Lyrics {
     pub lines: Vec<Line>,
     /// Bumped on every change, so views know when to redraw.
     pub version: u64,
+    /// The supplied lyrics, re-aligned when new words are heard.
+    pub text: Option<String>,
 }
 
 pub fn specs() -> Vec<CommandSpec> {
@@ -467,6 +469,7 @@ fn lyrics_set(e: &mut Engine, p: &Value) -> Result<Value> {
             return Err(bad(ID, NO_WORDS));
         }
         w.lyrics.lines = lyrics::align(&text, &w.lyrics.heard, end_s);
+        w.lyrics.text = Some(text);
     }
     w.lyrics.version = w.lyrics.version.wrapping_add(1);
     let heard = &w.lyrics.heard;
