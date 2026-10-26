@@ -182,7 +182,11 @@ how big, and downloads it only with `download: true` (in the app the button says
 
 In the app (Analysis menu): Separate Stems…, Transcribe Lyrics…, Practice… and Models…. Long work,
 including Analyze Song, runs in the background with its progress in the status line; Cancel there
-(or Analysis ▸ Cancel Job, `wave.cancel_job`) stops it.
+(or Analysis ▸ Cancel Job, `wave.cancel_job`) stops it. **Analyze Song separates stems first for
+the chords** when a 4-stem model is installed and the saved file is at most 15 minutes — chords read
+from the full mix are unusable on a sung song (the voice blurs the harmony). With no model it reads
+the mix and the status says so. The CLI/control-channel/MCP keep the plain `wave.analyze` (analyse
+exactly what is there; separate first yourself for chords).
 
 **Model acceptance** (a synthetic 41 s song: drums, bass, pad and an Italian TTS voice whose words
 sit at known times): vocal SDR 15.15 dB (target ≥ 6; drums 19.1, bass 15.2, other 11.6); 27 of 27
