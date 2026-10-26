@@ -72,6 +72,10 @@ pub struct WaveApp {
     job: Option<jobs::Job>,
     /// The practice session the player was last given (its address; 0 = the document).
     player_practice: usize,
+    /// Analyze Song asked to separate first (for chords): analyse once the stems arrive.
+    analyze_after_separation: bool,
+    /// The last analysis read chords from the mix (no stems): the status says so.
+    mix_chords_notice: bool,
 }
 
 /// An export whose path is chosen: the options window picks depth and dither.
@@ -113,6 +117,8 @@ impl WaveApp {
             models: models_ui::State::default(),
             job: None,
             player_practice: 0,
+            analyze_after_separation: false,
+            mix_chords_notice: false,
         }
     }
 
@@ -157,6 +163,11 @@ impl WaveApp {
                 None
             }
         }
+    }
+
+    /// The status line's current text (job progress, a result, a notice, or the file summary).
+    pub fn status(&self) -> &str {
+        &self.status
     }
 
     /// The waveform area of the last frame, in points.

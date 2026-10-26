@@ -10,6 +10,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
 use std::sync::{Arc, Mutex};
 
+/// Shown when chords were read from the mix rather than separated stems.
+const MIX_CHORDS_NOTICE: &str = "Chords read from the full mix — separate stems for reliable chords on songs with vocals.";
+
 pub enum Done {
     Analysis(an::AnalysisDone),
     Download(Result<Value, String>),
@@ -86,7 +89,9 @@ impl WaveApp {
     }
 
     fn apply_done(&mut self, done: Done) {
-        let separated = matches!(done, Done::Separation(Ok(_)));
+        let sep_ok = matches!(done, Done::Separation(Ok(_)));
+        let sep_err = matches!(done, Done::Separation(Err(_)));
+        let analysed = matches!(done, Done::Analysis(_));
         let e = &mut self.engine;
         let result: Result<(Value, &str), String> = match done {
             Done::Analysis(d) => an::apply_analysis(e, d).map(|v| (v, "Analysis done")).map_err(|x| x.to_string()),
@@ -95,7 +100,7 @@ impl WaveApp {
             Done::Transcription(r) => r.and_then(|d| ml::apply_transcription(e, d).map_err(|x| x.to_string())).map(|v| (v, "Lyrics transcribed")),
             Done::Practice(r) => r.and_then(|d| ml::apply_practice(e, d).map_err(|x| x.to_string())).map(|v| (v, "Practice ready")),
         };
-        let reanalyze = separated && result.is_ok();
+        let ok = result.is_ok();
         self.status = match result {
             Ok((v, what)) => match v.get("words").and_then(Value::as_u64) {
                 Some(n) => format!("{what}: {n} words"),
@@ -103,15 +108,57 @@ impl WaveApp {
             },
             Err(err) => err,
         };
-        // Chords and key now come from the stems: the lanes on screen are analysed again.
-        if reanalyze {
-            crate::analysis::reanalyze(self);
+        // A mix analysis (no stems) says so, once.
+        if analysed && ok && std::mem::take(&mut self.mix_chords_notice) {
+            self.status = MIX_CHORDS_NOTICE.to_string();
+        }
+        if sep_ok && ok {
+            if std::mem::take(&mut self.analyze_after_separation) {
+                // Analyze Song separated first: now read the chords from the stems.
+                self.analyze_in_background_with(&json!({}));
+            } else {
+                // Chords and key now come from the stems: analyse again what was on screen.
+                crate::analysis::reanalyze(self);
+            }
+        } else if sep_err && std::mem::take(&mut self.analyze_after_separation) {
+            // Separation failed: still give the user mix chords, with the notice.
+            self.mix_chords_notice = true;
+            self.analyze_in_background_with(&json!({}));
         }
     }
 
-    /// `wave.analyze` on the selection (or the whole file), in the background.
+    /// Analyze Song. Chords read from the mix are unusable on a sung song (the voice blurs the
+    /// harmony), so when a 4-stem model is installed and the saved file is short enough, separate
+    /// first and read chords from the stems; otherwise analyse the mix and say the chords came from
+    /// it. The CLI and the control channel keep the plain `wave.analyze` (no implicit separation).
     pub fn analyze_in_background(&mut self) {
-        self.analyze_in_background_with(&json!({}));
+        if self.job_running() {
+            self.analyze_in_background_with(&json!({}));
+            return;
+        }
+        if self.can_separate_for_chords() {
+            self.analyze_after_separation = true;
+            self.separate_in_background(json!({"model": 4}));
+            if !self.job_running() {
+                // Separation could not start: fall back to the mix.
+                self.analyze_after_separation = false;
+                self.mix_chords_notice = true;
+                self.analyze_in_background_with(&json!({}));
+            }
+        } else {
+            self.mix_chords_notice = ml::current_stems(&self.engine).is_none();
+            self.analyze_in_background_with(&json!({}));
+        }
+    }
+
+    /// Whether Analyze Song should separate stems first for the chords: no current stems, a 4-stem
+    /// model installed, the file saved, and at most 15 minutes (the separation cap).
+    fn can_separate_for_chords(&self) -> bool {
+        ml::current_stems(&self.engine).is_none()
+            && self.engine.wave_models.as_ref().is_some_and(|m| m.installed("htdemucs").is_some())
+            && self.engine.wave.as_ref().and_then(|w| w.path.as_ref()).is_some()
+            && self.file_len() > 0
+            && self.file_len() as f64 / f64::from(self.sample_rate().max(1)) <= 15.0 * 60.0
     }
 
     /// `wave.analyze` with `params`, in the background.

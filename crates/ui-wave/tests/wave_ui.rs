@@ -661,6 +661,27 @@ fn locate_and_the_heard_position_follow_the_practice_tempo() {
 }
 
 #[test]
+fn analyze_song_separates_first_for_chords_when_a_model_is_installed() {
+    let mut h = harness(with_models(song_opened("ml_ui_analyze_separates")));
+    menu(&mut h, "Analyze Song");
+    finish_jobs(&mut h);
+    assert_eq!(exec(&mut h, "wave.stems", json!({}))["stems"].as_array().map(Vec::len), Some(4), "no stems: it did not separate first");
+    assert_eq!(exec(&mut h, "wave.analysis_info", json!({}))["source"], "stems", "chords not from the stems");
+    assert!(h.state().analysis_lanes().is_some(), "no lanes after analysis");
+}
+
+#[test]
+fn analyze_song_without_a_model_reads_the_mix_and_says_so() {
+    let mut h = harness(song_opened("ml_ui_analyze_no_model"));
+    assert!(h.state().engine.wave_models.is_none());
+    menu(&mut h, "Analyze Song");
+    finish_jobs(&mut h);
+    assert_eq!(exec(&mut h, "wave.analysis_info", json!({}))["source"], "mix");
+    assert!(h.state().analysis_lanes().is_some());
+    assert!(h.state().status().to_lowercase().contains("mix"), "no mix-chords notice: {:?}", h.state().status());
+}
+
+#[test]
 fn lanes_come_back_after_separation() {
     let mut h = harness(with_models(song_opened("ml_ui_lanes_back")));
     menu(&mut h, "Analyze Song");
